@@ -2,9 +2,9 @@
 给你一个字符串 s 和一个字符串列表 wordDict 作为字典。如果可以利用字典中出现的一个或多个单词拼接出 s 则返回 true。
 注意：不要求字典中出现的单词全部都使用，并且字典中的单词可以重复使用。
 示例 1：
-输入: s = "leetcode", wordDict = ["leet", "code"]
+输入: s = "leetcode100", wordDict = ["leet", "code"]
 输出: true
-解释: 返回 true 因为 "leetcode" 可以由 "leet" 和 "code" 拼接成。
+解释: 返回 true 因为 "leetcode100" 可以由 "leet" 和 "code" 拼接成。
 示例 2：
 
 输入: s = "applepenapple", wordDict = ["apple", "pen"]
@@ -33,4 +33,4 @@ class Solution:
             return False
 
 if __name__ == '__main__':
-    print(Solution.wordBreak("leetcode", ["leet", "code"]))
+    print(Solution.wordBreak("leetcode100", ["leet", "code"]))
