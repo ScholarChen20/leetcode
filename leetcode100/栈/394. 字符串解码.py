@@ -27,7 +27,7 @@ def decodeString(s: str) -> str:
     return cnt
 
 if __name__ == "__main__":
-    s = "100[leetcode]"
+    s = "100[leetcode100]"
     print(decodeString(s))
 
 
