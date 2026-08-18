@@ -27,8 +27,9 @@ def decodeString(s: str) -> str:
 
 if __name__ == "__main__":
     # s = "100[leetcode100]"
-    s = "3[a]2[bc]"
+    # s = "3[a]2[bc]"
     # s = "3[a2[bc]"
+    s = "2[a2[d2[b]]]"
     print(decodeString(s))
 
 
