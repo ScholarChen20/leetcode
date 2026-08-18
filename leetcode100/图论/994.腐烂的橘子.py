@@ -13,7 +13,7 @@ from typing import List
 from collections import deque
 class Solution:
     def rangeRotting(self,grid: List[List[int]]) -> int:
-        """解法1：bfs"""
+        """解法1：图论"""
         row = len(grid)
         col = len(grid[0])
         time = 0

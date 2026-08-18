@@ -66,7 +66,7 @@ class Solution1:
 
 
 if __name__ == '__main__':
-    s = Solution()
+    s = Solution1()
     head = ListNode(7)
     head.next = ListNode(13)
     head.next.next = ListNode(11)
