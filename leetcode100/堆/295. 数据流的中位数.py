@@ -18,9 +18,9 @@ double findMedian() 返回到目前为止所有元素的中位数。与实际答
 import heapq
 class MedianFinder:
     """
-    可以将数据分为左右两边，一边以最大堆的形式实现，可以快速获得左侧最大数，
-另一边则以最小堆的形式实现。其中需要注意的一点就是左右侧数据的长度差不能超过1。
-这种实现方式的效率与AVL平衡二叉搜索树的效率相近，但编写更快
+    找中位数本质就是找有序序列中间位置的值。如果每次都排序再取中间值，插入一次是 (O(n \log n))。用两个堆可以把数据"劈成两半"：
+    大根堆（存较小的一半，堆顶是这半边的最大值） heapq 只实现了小根堆（堆顶永远是最小值），没有现成的大根堆。要模拟大根堆，标准技巧就是取相反数：原值 5, 3, 8 存进去变成 -5, -3, -8
+    小根堆（存较大的一半，堆顶是这半边的最小值）
     """
     def __init__(self):
         self.min_list = list()
@@ -40,6 +40,8 @@ class MedianFinder:
     def findMedian(self) -> float:
         if len(self.min_list) > len(self.max_list):
             return self.min_list[0]
+        if len(self.min_list) < len(self.max_list):
+            return -self.max_list[0]
         return (self.min_list[0] - self.max_list[0]) / 2
 
 if __name__ == '__main__':
