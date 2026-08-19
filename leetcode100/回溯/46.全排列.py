@@ -1,30 +1,37 @@
+"""
+给定一个不含重复数字的数组 nums ，返回其 所有可能的全排列 。
+你可以 按任意顺序 返回答案。
+
+示例：
+输入：nums = [1,2,3]
+输出：[[1,2,3],[1,3,2],[2,1,3],[2,3,1],[3,1,2],[3,2,1]]
+"""
+
 from typing import List
 
 class Solution:
-    def __init__(self):
-        self.result = []
-        self.cur = []
-
     def permute(self, nums: List[int]) -> List[List[int]]:
         n = len(nums)
         used = [False] * n
-
-        def backtrack():
-            if len(self.cur) == n:
-                self.result.append(self.cur[:])
+        res = []
+        def facktrack(path, used):
+            if len(path) == n:
+                res.append(path[:])
                 return
             for i in range(n):
                 if used[i]:
                     continue
-                self.cur.append(nums[i])
+                path.append(nums[i])
                 used[i] = True
-                backtrack()
-                self.cur.pop()
+                facktrack(path, used)
+                path.pop()
                 used[i] = False
 
-        backtrack()
-        return self.result
+        facktrack([], used)
+        return res
 
 if __name__ == '__main__':
     s = Solution()
-    print(s.permute([1,2,3]))
+    # print(s.permute([1,2,3]))
+    # print(s.permute([1,3]))
+    print(s.permute([1]))
