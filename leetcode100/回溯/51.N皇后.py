@@ -33,16 +33,16 @@ class Solution:
                 # print( path)
 
     def isValid(self, path, row, col, n):
-        for i in range(row):
+        for i in range(row): # 判断列是否有皇后
             if path[i][col] == "Q":
                 return False
-        i, j = row - 1, col - 1
+        i, j = row - 1, col - 1  # 左上角, i >= 0 保证不会越界 j >= 0 保证不会越界
         while i >= 0 and j >= 0:
             if path[i][j] == "Q":
                 return False
             i -= 1
             j -= 1
-        i, j = row - 1, col + 1
+        i, j = row - 1, col + 1 # 右上角, i >= 0 保证不会越界 j < n 保证不会越界
         while i >= 0 and j < n:
             if path[i][j] == "Q":
                 return False
