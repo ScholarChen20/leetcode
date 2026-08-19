@@ -11,8 +11,6 @@ n 皇后问题 研究的是如何将 n 个皇后放置在 n×n 的棋盘上，�
 输出：[[".Q..","...Q","Q...","..Q."],["..Q.","Q...","...Q",".Q.."]]
 """
 from typing import List
-
-
 class Solution:
     def solveNQueens(self, n: int) -> List[List[str]]:
         """
