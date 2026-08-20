@@ -20,6 +20,11 @@ from typing import List
 
 class Solution:
     def searchRange(self, nums: List[int], target: int):
+        """
+        二分查找, 找到第一个等于target的元素，然后找到最后一个等于target的元素
+        1. 找到第一个等于target的元素，然后找到最后一个等于target的元素
+        2. 如果left不等于target，则返回[-1, -1]
+        """
         n = len(nums)
         ans = [-1, -1]
         if n == 0:
@@ -27,13 +32,13 @@ class Solution:
         left = 0
         right = n - 1
 
-        while left < right:
+        while left < right: # 找到第一个等于target的元素
             mid = (left + right) // 2
-            if nums[mid] < target:
+            if nums[mid] < target: # 如果mid小于target，则left = mid + 1
                 left = mid + 1
             else:
                 right = mid
-        if nums[left] != target:
+        if nums[left] != target: # 如果left不等于target，则返回[-1, -1]
             return ans
         ans[0] = left
 
