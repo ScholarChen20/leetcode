@@ -15,18 +15,15 @@
 from typing import List
 class Solution:
     def canPartition(self, nums: List[int]) -> bool:
-        # 先判断n的长度，如果n的长度小于2，则返回false
+        """dp[i][j]表示【0，i】位置的元素，是否可以找到一个子集，使得子集的和为j dp[i][j] = dp[i - 1][j] | dp[i - 1][j - nums[i]]"""
         n = len(nums)
         if n < 2:
             return False
+
         total = sum(nums)
         if total & 1:
             return False
-        maxNum = max(nums)
-        if maxNum > total // 2:
-            return False
 
-        j = maxNum // 2
         dp = [[False] * (total // 2 + 1) for _ in range(n)]
         # 定义dp[i][j]表示【0，i】位置的元素，是否可以找到一个子集，使得子集的和为j
         for i in range(n):
@@ -42,11 +39,8 @@ class Solution:
 
         return dp[-1][-1]
 
-class Solution1:
-    def canPartition(self, nums: List[int]) -> bool:
-        """
-        一维dp
-        """
+    def canPartition_1(self, nums: List[int]) -> bool:
+        """一维dp, dp[j]表示是否可以找到一个子集，使得子集的和为j,dp[j] = dp[j] | dp[j - nums[i]]"""
         n = len(nums)
         if n < 2:
             return False
@@ -56,11 +50,11 @@ class Solution1:
             return False
 
         target = total // 2
-        dp = [True] + [False] * target
+        dp = [True] + [False] * target # dp[j]表示是否可以找到一个子集，使得子集的和为j
         for i in range(1, n):
-            for j in range(target, nums[i] - 1, -1):
+            for j in range(target, nums[i] - 1, -1): # 从后往前遍历，避免重复计算
                 dp[j] = dp[j] | dp[j - nums[i]]
         return dp[-1]
 
 if __name__ == '__main__':
-    print(Solution1().canPartition([1,2,2,5]))
+    print(Solution().canPartition_1([1,2,2,5]))

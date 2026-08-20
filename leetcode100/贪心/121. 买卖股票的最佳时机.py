@@ -1,12 +1,7 @@
 """
-
 给定一个数组 prices ，它的第 i 个元素 prices[i] 表示一支给定股票第 i 天的价格。
-
 你只能选择 某一天 买入这只股票，并选择在 未来的某一个不同的日子 卖出该股票。设计一个算法来计算你所能获取的最大利润。
-
 返回你可以从这笔交易中获取的最大利润。如果你不能获取任何利润，返回 0 。
-
-
 
 示例 1：
 
@@ -17,15 +12,18 @@
 """
 from cmath import inf
 from typing import List
-
-
 class Solution:
     def maxProfit(self, prices: List[int]) -> int:
-        min_num = inf
+        """
+        贪心思路：遍历数组，记录最小值，然后计算最大值
+        时间复杂度：O(n)
+        空间复杂度：O(1)
+        """
+        min_num = inf # 无穷大
         max_price =0
         for price in prices:
-            max_price=max(price-min_num, max_price)
-            min_num=min(price, min_num)
+            max_price = max(price - min_num, max_price)
+            min_num = min(price, min_num)
         return max_price
 
 

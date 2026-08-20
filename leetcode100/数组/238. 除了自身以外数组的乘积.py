@@ -18,11 +18,16 @@ class Solution:
         n = len(nums)
         res = [1] * n
         left = 1
-        for i in range(n):
+        for i in range(n):  # 计算前缀和，res[i]表示前i个数的乘积
             res[i] = left
             left *= nums[i]
+
         right = 1
-        for i in range(n-1, -1, -1):
+        for i in range(n-1, -1, -1): # 计算后缀和， res[i]表示后i个数的乘积
             res[i] *= right
             right *= nums[i]
         return res
+
+if __name__ == '__main__':
+    s = Solution()
+    print(s.productExceptSelf([1,2,3,4]))

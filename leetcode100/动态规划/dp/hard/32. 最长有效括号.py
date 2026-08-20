@@ -18,6 +18,13 @@
 """
 class Solution:
     def longestValidParentheses(self, s: str) -> int:
+        """
+        栈，栈中存储的是索引，栈底存储的是当前字符串的索引，栈顶存储的是当前字符串的索引
+        遍历字符串，如果当前字符为'('，则将当前字符的索引入栈
+        如果当前字符为')'，则将栈顶元素出栈，如果栈为空，则将当前字符的索引入栈
+        否则，计算当前字符串的长度，更新ans
+        返回ans
+        """
         stack = []
         ans = 0
         for i,str in enumerate(s):
@@ -57,5 +64,5 @@ class Solution1:
 
 if __name__ == '__main__':
     # print(Solution1().longestValidParentheses(")()())"))
-    # print(Solution1().longestValidParentheses("(())"))
-    print(Solution1().longestValidParentheses("(()"))
+    print(Solution().longestValidParentheses("(())"))
+    # print(Solution().longestValidParentheses("(()"))

@@ -10,9 +10,7 @@
 class Solution:
     def canJump(self, nums: list[int]) -> bool:
         """
-        
-        :param nums:
-        :return:
+        贪心算法，max_reach表示当前能到达的最远距离，如果i > max_reach，则返回False，否则更新max_reach
         """
         max_reach = 0
         for i, jump in enumerate(nums):

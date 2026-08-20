@@ -34,9 +34,7 @@ class Solution:
                 begin = left + 1
         return s[begin:begin + max_len]
 
-
-class Solution1:
-    def longestPalindrome(self, s: str) -> str:
+    def longestPalindrome_1(self, s: str) -> str:
         """动态规划"""
         n = len(s)
         dp = [[False] * n for _ in range(n)]
@@ -55,4 +53,4 @@ class Solution1:
 
 if __name__ == '__main__':
     # print(Solution().longestPalindrome("babad"))
-    print(Solution1().longestPalindrome("babad"))
+    print(Solution().longestPalindrome1("babad"))

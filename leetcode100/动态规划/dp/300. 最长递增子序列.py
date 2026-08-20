@@ -15,6 +15,7 @@
 from typing import List
 class Solution:
     def lengthOfLIS(self, nums: List[int]) -> int:
+        """二分查找 O(nlogn), 定义ans"""
         ans = []
         for i in nums:
             if not ans or i > ans[-1]:
@@ -24,18 +25,15 @@ class Solution:
                 right = len(ans) - 1
                 while left < right:
                     mid = (left + right) // 2
-                    if ans[mid] < i:
+                    if ans[mid] < i: # 找到第一个大于等于i的数
                         left = mid + 1
                     else:
                         right = mid
-                ans[left] = i
+                ans[left] = i # 更新ans
         return len(ans)
 
-class Solution1:
-    """
-    动态规划
-    """
-    def lengthOfLIS(self, nums: List[int]) -> int:
+    """动态规划 O(n^2) dp[i]表示以nums[i]结尾的最长子序列长度 dp[i] = max(dp[i], dp[j] + 1) """
+    def lengthOfLIS_1(self, nums: List[int]) -> int:
         n = len(nums)
         dp = [1] * n
         for i in range(n):
@@ -44,14 +42,13 @@ class Solution1:
                     dp[i] = max(dp[i], dp[j] + 1)
         return max(dp)
 
-class Solution2:
-    """动态规划＋2分查询
-    定义 tails, res
-    """
-    def lengthOfLIS(self, nums: List[int]) -> int:
-        tails, res = [0] * len(nums), 0
+    """动态规划＋2分查询 定义 tails, res = 0 tails[i]表示长度为i的最长子序列的最小末尾元素"""
+    def lengthOfLIS_2(self, nums: List[int]) -> int:
+        tails = [0] * len(nums)
+        res = 0
         for num in nums:
-            left, right = 0, res
+            left = 0
+            right = res
             while left < right:
                 mid = (left + right) // 2
                 if tails[mid] < num:
@@ -59,13 +56,11 @@ class Solution2:
                 else:
                     right = mid
             tails[left] = num
-            if right == res:
+            if left == res: # 如果left==res,说明num大于所有tails中的元素，res+1
                 res += 1
-        return  res
-
-
+        return res
 
 
 if __name__ == '__main__':
     # print(Solution().lengthOfLIS([0,1,0,3,2,3]))
-    print(Solution1().lengthOfLIS([10,9,2,5,3,7,]))
+    print(Solution().lengthOfLIS([10,9,2,5,3,7,101,18]))

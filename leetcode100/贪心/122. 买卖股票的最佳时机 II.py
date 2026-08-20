@@ -14,23 +14,32 @@
 """
 import sys
 from typing import List
-
-
 class Solution:
     def maxProfit(self, prices: List[int]) -> int:
+        """
+        贪心算法，只要后一天比前一天大，就卖出，否则不买。原因是题目说可以一天多次买卖股票，所以只要后一天比前一天大，就卖出，否则不买。
+        """
         profit = 0
         for i in range(1, len(prices)):
             if prices[i] > prices[i - 1]:
                 profit += prices[i] - prices[i - 1]
         return profit
 
+    def maxProfits(self, prices: List[int]) -> int:
+        """
+        动态规划，dp[i]表示前i天的最大利润，dp[i] = max(dp[i - 1], dp[i - 1] + prices[i] - prices[i - 1])
+        """
+        dp = [0] * len(prices)
+        dp[0] = 0
+        for i in range(1, len(prices)):
+            dp[i] = max(dp[i-1], dp[i-1] + prices[i] - prices[i-1])
+        return dp[-1]
+
 if __name__ == '__main__':
     s=Solution()
-    input = sys.stdin.readline
-    k = int(input())
-    print("手动输入数字：",k )
     # print(s.maxProfit([7,1,5,3,6,4]))
     # print(s.maxProfit([1,2,3,4,5]))
     # print(s.maxProfit([7,6,4,3,1]))
     nums = list(map(int, input().strip().split()))
-    print(s.maxProfit(nums))
+    # print(s.maxProfit(nums))
+    print(s.maxProfits(nums))

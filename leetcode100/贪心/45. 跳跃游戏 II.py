@@ -19,16 +19,18 @@ i + j < n
 class Solution:
     def jump(self, nums: list[int]) -> int:
         """
-        贪心算法
-        :param nums:
-        :return:
+        贪心算法，jumps表示跳跃次数，current_head表示当前能到达的最远距离，next_head表示下一步能到达的最远距离
         """
-        jumps = 0
-        current_head = 0
-        next_head = 0
-        for i in range(len(nums) - 1):
-            next_head = max(next_head, i + nums[i])
-            if i > current_head:
+        jumps = 0 # 跳跃次数
+        current_head = 0    # 当前能到达的最远距离
+        next_head = 0        # 下一步能到达的最远距离
+        for i ,jump in enumerate(nums):
+            if i > current_head: # 如果i > current_head，则需要跳跃一次，更新current_head为next_head
                 jumps += 1
                 current_head = next_head
-        return jumps    
+            next_head = max(next_head, i + jump)
+        return jumps
+
+if __name__ == '__main__':
+    s=Solution()
+    print(s.jump([2,3,1,1,4]))

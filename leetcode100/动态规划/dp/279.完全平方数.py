@@ -29,21 +29,19 @@ class Solution:
         dfs.cache_clear()
         return ans
 
-class Solution1:
-    def numSquares(self, n: int) -> int:
+    def numSquares2(self, n: int) -> int:
         """
-        输入：n = 12
-        输出：3
-        解释：12 = 4 + 4 + 4
+        动态规划,dp[i]表示和为i的最少完全平方数个数
         """
         dp = [inf] * (n + 1) # 初始化dp表示dp[i]表示和为i的最少完全平方数个数
         dp[0] = 0
-        for i in range(1,n+1):
-            for j in range(1,int(pow(i,0.5))+1):
-                dp[i] = min(dp[i], dp[i - j * j] + 1)
+        for i in range(1, n+1):
+            for j in range(1, i+1):
+                if j*j <= i:
+                    dp[i] = min(dp[i], dp[i - j*j] + 1)
         return dp[-1]
 
 
 if __name__ == '__main__':
     # print(Solution().numSquares(214))
-    print(Solution1().numSquares(13))
+    print(Solution().numSquares2(13))
