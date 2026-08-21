@@ -13,14 +13,13 @@
 解释：整个字符串 s 是最小覆盖子串。
 """
 from collections import Counter
-
 """具体来说：
-1.初始化 ansLeft=−1, ansRight=m，用来记录最短子串的左右端点，其中 m 是 s 的长度。
+1.初始化 ansLeft=−1,ansRight=m，用来记录最短子串的左右端点，其中 m 是 s 的长度。
 2.用一个哈希表（或者数组）cntT 统计 t 中每个字母的出现次数。
 3.初始化 left=0，以及一个空哈希表（或者数组）cntS，用来统计 s 子串中每个字母的出现次数。
 4.历 s，设当前枚举的子串右端点为 right，把 s[right] 的出现次数加一。
 5.遍历 cntS 中的每个字母及其出现次数，如果出现次数都大于等于 cntT 中的字母出现次数：
- 如果 right−left<ansRight−ansLeft，说明我们找到了更短的子串，更新 ansLeft=left, ansRight=right。
+ 如果 right−left<ansRight−ansLeft，说明我们找到了更短的子串，更新 ansLeft=left,ansRight=right。
  把 s[left] 的出现次数减一。
  左端点右移，即 left 加一。
  重复上述三步，直到 cntS 有字母的出现次数小于 cntT 中该字母的出现次数为止。
@@ -30,12 +29,12 @@ class Solution:
     def minWindow(self, s: str, t: str) -> str:
         cnt_s = Counter()
         cnt_t = Counter(t)
-        ans_left , ans_rigth = -1, len(s)
-        left = 0
+        ans_left , ans_rigth = -1, len(s) # 记录最短子串的左右端点
+        left = 0 # 左端点
 
         for right,c in enumerate(s):
             cnt_s[c] += 1
-            while cnt_s >= cnt_t:
+            while cnt_s >= cnt_t: # 如果cnt_t的元素数在cnt_s都有且cnt_s的元素数大于cnt_t的元素数
                 if right - left < ans_rigth - ans_left:
                     ans_left, ans_rigth = left, right
                 cnt_s[s[left]] -= 1

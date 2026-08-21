@@ -9,10 +9,13 @@
 """
 import collections
 from typing import List
-
-
 class Solution:
     def maxSlidingWindow(self, nums: List[int], k: int) -> List[int]:
+        """
+        维护一个队列，队列中存储的是数组的下标，队列中的元素是单调递减的，队列中的第一个元素就是滑动窗口的最大值
+        时间复杂度：O(n)
+        空间复杂度：O(k)
+        """
         queue = collections.deque()
         res = []
         n = len(nums)
