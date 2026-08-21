@@ -12,14 +12,10 @@
 输出：9
 """
 from typing import List
-
-
 class Solution:
     def longestConsecutive(self, nums: List[int]) -> int:
         """
-        思路是：
-        :param nums:
-        :return:
+        思路是：先将数组中的元素去重，然后遍历数组，如果当前元素-1不在数组中，说明当前元素是序列的起点，然后从当前元素开始向后遍历，直到当前元素+1不在数组中，说明当前元素是序列的终点，然后更新最长序列的长度
         """
         longest_stack = 0
         num_set = set(nums)
@@ -28,11 +24,11 @@ class Solution:
                 current_num = num
                 current_stack = 1
 
-                while current_num+1 in num_set:
-                    current_num += 1
+                while current_num+1 in num_set: # 当前元素+1在数组中，说明当前元素+1是序列的下一个元素
+                    current_num += 1 # 当前元素+1
                     current_stack += 1
 
-                longest_stack = max(longest_stack, current_stack)
+                longest_stack = max(longest_stack, current_stack) # 更新最长序列的长度
         return longest_stack
 
 if __name__ == '__main__':
