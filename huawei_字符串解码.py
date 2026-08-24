@@ -35,3 +35,4 @@ if __name__ == '__main__':
     双位数 13[a]2[bc]
     嵌套 1[ab2[cd]]
     """
+    print(main("2[a]2[bc]"))
