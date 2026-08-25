@@ -16,7 +16,7 @@
 class Solution:
     def sortColors(self, nums: list[int]) -> None:
         """
-        双指针,
+        双指针，p0指向0的最右边， p2指向2的最左边， cur指向当前元素， 如果cur是0， 则与p0交换， p0++， cur++， 如果cur是2， 则与p2交换， p2--， 如果cur是1， 则cur++
         """
         n = len(nums)
         p0, p2 = 0, n - 1

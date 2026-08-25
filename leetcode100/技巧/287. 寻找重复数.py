@@ -17,7 +17,7 @@
 """
 class Solution:
     def findDuplicate(self, nums: list[int]) -> int:
-        """快慢指针"""
+        """快慢指针， 快指针每次走两步， 慢指针每次走一步， 相遇时， 快指针从头开始， 慢指针不变， 再次相遇时， 就是环的入口"""
         slow = fast =0
         while True:
             slow = nums[slow]
