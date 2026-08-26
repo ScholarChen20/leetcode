@@ -11,8 +11,6 @@
 输出：2
 """
 import collections
-
-
 class Solution:
     def majorityElement(self, nums: list[int]) -> int:
         """
