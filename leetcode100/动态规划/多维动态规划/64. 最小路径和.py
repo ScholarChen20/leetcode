@@ -11,10 +11,9 @@
 输出：12
 """
 from typing import List
-
-
 class Solution:
     def minPathSum(self, grid: List[List[int]]) -> int:
+        """dp[i][j]表示从(0,0)到(i,j)的最小路径和 dp[i][j] = min(dp[i-1][j], dp[i][j-1]) + grid[i][j]"""
         dp = [[0] * len(grid[0]) for _ in range(len(grid))]
         # 初始顶行元素和第一列元素
         dp[0][0] = grid[0][0]

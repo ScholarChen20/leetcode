@@ -17,12 +17,17 @@
 from typing import List
 class Solution:
     def canFinish(self, numCourses: int, prerequisites: List[List[int]]) -> bool:
+        """DFS + 三色标记法检测有向图中是否存在环"""
         graph = [[] for _ in range(numCourses)] # 邻接表
         visited = [0] * numCourses # 0 未访问，1 已访问，-1 访问中
         for course, pre in prerequisites: # 构建图
             graph[course].append(pre)
 
         def dfs(course):
+            """遇到 1：之前已确认这条链无环，直接返回 True（剪枝，避免重复搜索）。
+                遇到 -1：说明沿着依赖链又走回了当前递归栈中尚未走完的节点，即出现环，返回 False。
+                否则先标 -1 表示“访问中”，再递归遍历它的全部先修课；只要任一先修课路径上有环就立刻返回 False。
+                全部先修都安全后，把该点标成 1（已完成、无环），返回 True。"""
             if visited[course] == 1:
                 return True
             if visited[course] == -1:
@@ -34,7 +39,7 @@ class Solution:
             visited[course] = 1
             return True
 
-        for course in range(numCourses):
+        for course in range(numCourses):  # 图未必是连通的，所以从每个课程都发起一次 DFS；一旦发现环立刻 return False，全部无环才返回 True。
             if not dfs(course):
                 return False
         return True

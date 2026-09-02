@@ -13,7 +13,7 @@ from typing import List
 from collections import deque
 class Solution:
     def rangeRotting(self,grid: List[List[int]]) -> int:
-        """解法1：图论"""
+        """集合实现 DFS， 集合存储腐烂橘子和新鲜橘子， 循环腐烂橘子集合，将腐烂橘子周围的橘子腐烂，时间+1，直到没有新鲜橘子"""
         row = len(grid)
         col = len(grid[0])
         time = 0
@@ -23,7 +23,8 @@ class Solution:
         fresh_origan = {(i,j) for i in range(row) for j in range(col) if grid[i][j] == 1}
 
         while fresh_origan:
-            if not fresh_origan: return -1
+            if not fresh_origan:
+                return -1
             rotten_origan += {(i+di,j+dj) for i,j in rotten_origan for di,dj in [(0,1),(0,-1),(1,0),(-1,0)] if (i+di,j+dj) in fresh_origan}
             fresh_origan -= rotten_origan
             time += 1
@@ -31,8 +32,10 @@ class Solution:
         return time
 
 
-class solution():
-    def orangeRotting(self,grid: List[List[int]]) -> int:
+    def orangeRotting_2(self,grid: List[List[int]]) -> int:
+        """
+        队列实现 BFS
+        """
         rows = len(grid)
         cols = len(grid[0])
         queue = deque()
@@ -89,4 +92,4 @@ if __name__ == '__main__':
             index += 1
         grid.append(row)
 
-    print(solution().orangeRotting(grid))
+    print(Solution().orangeRotting(grid))

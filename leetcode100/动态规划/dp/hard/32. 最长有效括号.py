@@ -62,5 +62,5 @@ class Solution:
         return max(dp)
 
 if __name__ == '__main__':
-    print(Solution().longestValidParentheses("()()"))
-    # print(Solution().longestValidParentheses_2("()()"))
+    # print(Solution().longestValidParentheses("()()"))
+    print(Solution().longestValidParentheses_2("((()))"))
