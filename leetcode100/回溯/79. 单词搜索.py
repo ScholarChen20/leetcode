@@ -18,23 +18,25 @@ from typing import List
 class Solution:
     def exist(self, board: List[List[str]], word: str) -> bool:
         """
-        回溯
+        回溯，visited 记录已经访问过的节点，防止重复访问 k 记录当前匹配到的字符索引 i, j 表示当前节点的坐标
+        如果 board[i][j] == word[k]，则继续匹配下一个字符，否则返回 False
         """
         if not board or not word:
             return False
         visited = set()
         m, n = len(board), len(board[0])
         def facktrace(i, j, k):
-            if board[i][j] == word[k]:
-                if k == len(word) - 1:
+            if board[i][j] == word[k]: # 如果当前节点的字符等于 word 的第 k 个字符
+                if k == len(word) - 1: # 如果 k 等于 word 的长度 - 1，说明已经匹配到 word 的最后一个字符，返回 True
                     return True
             visited.add((i, j))
             for x, y in [(i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1)]:
-                if 0 <= x < m and 0 <= y < n and board[x][y] == word[k + 1]:
+                if 0 <= x < m and 0 <= y < n and board[x][y] == word[k + 1]: # 如果下一个节点在 board 的范围内，且下一个节点的字符等于 word 的第 k + 1 个字符
                     if facktrace(x, y, k + 1):
                         return True
             visited.remove((i, j))
             return False
+
         for i in range(m):
             for j in range(n):
                 if facktrace(i, j, 0):
