@@ -20,9 +20,8 @@ class DLinkedNode:
         self.prev = None
         self.next = None
 
-
 class LRUCache:
-
+    """思路： 双向链表+哈希表，双向链表用于存储key-value，哈希表用于存储key和节点的映射，双向链表的头部是最近使用的节点，尾部是最近未使用的节点，哈希表用于快速查找节点，双向链表用于快速删除节点"""
     def __init__(self, capacity: int):
         self.cache = dict()
         # 使用伪头部和伪尾部节点
