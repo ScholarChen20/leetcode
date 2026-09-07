@@ -15,7 +15,7 @@ from typing import List
 class Solution:
     def maxProfit(self, prices: List[int]) -> int:
         """
-        贪心思路：遍历数组，记录最小值，然后计算最大值
+        贪心思路：遍历数组，记录最大利润，再记录最小价格
         时间复杂度：O(n)
         空间复杂度：O(1)
         """

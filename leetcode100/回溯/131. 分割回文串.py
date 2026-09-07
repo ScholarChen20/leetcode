@@ -20,11 +20,11 @@ class Solution:
         n = len(s)
         res = []
         def facktrace(path, start):
-            if start == n:
-                res.append(path[:])
+            if start == n: # 找到一个解
+                res.append(path[:]) # path 是引用传递，需要拷贝一下
                 return
             for i in range(start, n):
-                if s[start:i+1] == s[start:i+1][::-1]:
+                if s[start:i+1] == s[start:i+1][::-1]: # 判断是否是回文串
                     path.append(s[start:i+1])
                     facktrace(path, i + 1)
                     path.pop()

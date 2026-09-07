@@ -14,7 +14,7 @@ from typing import List
 class Solution:
     def subsets(self, nums: List[int]):
         """
-        思路：回溯
+        思路：回溯，start 表示从 nums 的第几个元素开始，path 表示当前的子集，res 表示所有子集
         """
         n = len(nums)
         res = []
