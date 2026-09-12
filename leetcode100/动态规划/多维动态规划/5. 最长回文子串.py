@@ -12,7 +12,7 @@
 """
 class Solution:
     def longestPalindrome(self, s: str) -> str:
-        """双指针"""
+        """双指针: 中心扩展法，从中心向两边扩展，判断是否是回文串，如果是回文串，则更新最大长度和起始位置"""
         n = len(s)
         if n < 2:
             return s
@@ -35,14 +35,14 @@ class Solution:
         return s[begin:begin + max_len]
 
     def longestPalindrome_1(self, s: str) -> str:
-        """动态规划"""
+        """动态规划, dp[i][j]表示s[i:j+1]是否是回文串 dp[i][j] = (s[i] == s[j]) and ((i - j < 3) or dp[i - 1][j + 1])"""
         n = len(s)
         dp = [[False] * n for _ in range(n)]
         begin = 0
         max_len = 1
         for i in range(n):
-            dp[i][i] = True
-            for j in range(i - 1, -1, -1):
+            dp[i][i] = True # 初始化
+            for j in range(i - 1, -1, -1): # 从后往前遍历，避免重复计算
                 dp[i][j] = (s[i] == s[j]) and ((i - j < 3) or dp[i - 1][j + 1])
                 if dp[i][j] and i - j + 1 > max_len:
                     max_len = i - j + 1

@@ -8,9 +8,9 @@
 """
 
 from typing import List
-
 class Solution:
     def permute(self, nums: List[int]) -> List[List[int]]:
+        """回溯 + 剪枝: used 数组记录每个数字是否被使用过，如果被使用过，则跳过，否则添加到 path 中，然后递归，最后回溯"""
         n = len(nums)
         used = [False] * n
         res = []

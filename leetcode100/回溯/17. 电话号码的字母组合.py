@@ -33,13 +33,13 @@ class Solution:
         }
         res = []
         def facktrace(path, index):
-            if index == len(digits):
-                res.append("".join(path))
+            if index == len(digits): # 终止条件
+                res.append("".join(path)) # 满足条件
                 return
-            for i in phone[digits[index]]:
-                path.append(i)
-                facktrace(path, index + 1)
-                path.pop()
+            for i in phone[digits[index]]: # 遍历当前数字对应的字母
+                path.append(i) # 选择
+                facktrace(path, index + 1) # 递归
+                path.pop()  # 撤销选择
         facktrace([], 0)
         return res
 

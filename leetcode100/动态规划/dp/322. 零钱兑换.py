@@ -21,9 +21,7 @@ from functools import cache
 from typing import List
 class Solution:
     def coinChange(self, coins: List[int], amount: int) -> int:
-        """
-        dfs(i, j) 表示使用前i个硬币，凑成金额j的最少硬币个数。 i从n-1到0，j从amount到0
-        """
+        """dfs(i, j) 表示使用前i个硬币，凑成金额j的最少硬币个数。 i从n-1到0，j从amount到0"""
         n= len(coins)
         coins.sort()
         def dfs(i, j, coinsList):
@@ -38,6 +36,16 @@ class Solution:
 
         ans = dfs(n-1, amount, coins)
         return ans if ans != inf else -1
+
+    def coinChange2(self, coins: List[int], amount: int) -> int:
+        """dp[i]表示凑成金额i的最少硬币个数"""
+        dp = [inf] * (amount + 1)
+        dp[0] = 0
+        for i in range(1, amount + 1):
+            for j in range(len(coins)):
+                if i >= coins[j]:
+                    dp[i] = min(dp[i], dp[i - coins[j]] + 1)
+        return dp[-1] if dp[-1] != inf else -1
 
 if __name__ == '__main__':
     print(Solution().coinChange([2,5,10,1], 27))

@@ -16,6 +16,8 @@ class Solution:
     def maxProduct(self, nums: List[int]) -> int:
         """
         二维dp， dp[i][0]表示以nums[i]结尾的最小乘积，dp[i][1]表示以nums[i]结尾的最大乘积
+        时间复杂度：O(n)
+        空间复杂度：O(n)
         """
         n = len(nums)
         dp = [[0] * 2 for _ in range(n)]

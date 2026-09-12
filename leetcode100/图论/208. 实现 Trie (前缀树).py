@@ -15,16 +15,17 @@ boolean startsWith(String prefix) 如果之前已经插入的字符串 word 的�
 [null, null, true, false, true, null, true]
 """
 class Solution:
+    """思路： 字典树，每个节点有26个子节点，每个节点表示一个字母，每个节点都有一个标志位，表示是否为单词的结尾"""
     def __init__(self):
         self.children = [None] * 26
         self.isEnd = False
 
     def insert(self, word: str) -> None:
-        node = self
+        node = self # 从根节点开始
         for ch in word:
             index = ord(ch) - ord('a')
             if not node.children[index]:
-                node.children[index] = Solution()
+                node.children[index] = Solution() # 创建新节点
             node = node.children[index]
         node.isEnd = True
 
