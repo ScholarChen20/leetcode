@@ -18,7 +18,7 @@ class Solution:
         ans = 0
         heights.append(0)
         for i,h in enumerate(heights):
-            while stack and heights[stack[-1]] > h:
+            while stack and heights[stack[-1]] > h: # 如果当前高度小于栈顶高度，说明栈顶高度的矩形可以计算面积了
                 height = heights[stack.pop()]
                 width = i - stack[-1] - 1 if stack else i
                 ans = max(ans, height * width)
