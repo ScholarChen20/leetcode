@@ -23,7 +23,6 @@ class Solution:
                 width = i - stack[-1] - 1 if stack else i
                 ans = max(ans, height * width)
             stack.append(i)
-
         return ans
 
 if __name__ == '__main__':
