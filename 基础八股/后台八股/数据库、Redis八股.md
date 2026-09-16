@@ -421,7 +421,7 @@ SUPPORTS / NOT_SUPPORTED / MANDATORY / NEVER / NESTED
 ---
 
 ## M4. MVCC（多版本并发控制）
-
+是数据库通过“保存数据多个版本”来实现并发控制的机制。MySQL InnoDB 中，MVCC 主要用于提高读写并发，减少读操作对写操作的阻塞。MVCC 通过 undo log + Read View + 多版本数据 实现非阻塞快照读；锁机制则负责控制当前读和写操作之间的并发冲突。
 ### 实现原理
 
 ```text
@@ -455,6 +455,8 @@ SUPPORTS / NOT_SUPPORTED / MANDATORY / NEVER / NESTED
 ```text
 快照读（普通 select）：读 Read View 快照，不加锁
 当前读（select for update / update / delete）：读最新数据，加锁
+
+
 ```
 
 ---
