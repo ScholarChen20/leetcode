@@ -23,8 +23,6 @@
 解释: 根节点的值为 5 ，但是其右子节点值为 4 。
 """
 from typing import Optional
-
-
 class TreeNode:
     def __init__(self, val=0, left=None, right=None):
         self.val = val

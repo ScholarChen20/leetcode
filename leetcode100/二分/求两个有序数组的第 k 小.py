@@ -53,6 +53,6 @@ class Solution:
 
 if __name__ == '__main__':
     s = Solution()
-    # print(s.findMedianSortedArrays([1, 3], [2]))      # 2.0
+    print(s.findMedianSortedArrays([1, 3], [2]))      # 2.0
      # print(s.findMedianSortedArrays([1, 2], [3, 4]))   # 2.5
-    print(s.findKth([1, 2], [3, 4], 2))
+    # print(s.findKth([1, 2], [3, 4], 2))
