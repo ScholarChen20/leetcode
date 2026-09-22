@@ -89,11 +89,6 @@
 - 特点：不一致窗口小，主流选择
 ```
 
-
-### Read/Write Through 与 Write Behind
-
-- Read/Write Through：由缓存层统一代理读写，缓存未命中时读取 DB，写入时同步更新缓存和 DB，业务代码更简单，但缓存层实现复杂。
-- Write Behind：先更新缓存，再异步批量写入 DB，吞吐量高，但服务宕机时可能丢数据，适合对实时持久化要求不高的场景。
 ### 缓存常见问题
 
 | 问题 | 描述 | 解决 |
@@ -548,27 +543,6 @@ Next-Key Lock：Record + Gap，左开右闭区间
 | undo log | InnoDB 引擎层 | 事务回滚、MVCC |
 | binlog | MySQL Server 层 | 主从复制、数据恢复 |
 
-### redo log
-
-```text
-- 物理日志：记录数据页的修改
-- 循环写：固定大小，写满循环覆盖
-- WAL（Write-Ahead Logging）：先写日志再写数据页
-- 刷盘参数 innodb_flush_log_at_trx_commit：
-  0：每秒刷盘，可能丢 1 秒
-  1：每次提交刷盘（默认，安全）
-  2：每次提交写 OS 缓存
-```
-
-### binlog
-
-```text
-- 逻辑日志：记录 SQL 语句或行变更
-- 追加写：文件写满滚动
-- 格式：STATEMENT / ROW / MIXED
-- 用途：主从复制、数据恢复（如误删恢复）
-```
-
 
 ### redo log、undo log、binlog 的职责
 
@@ -581,7 +555,7 @@ MySQL 的备份、主从和主备同步主要依赖 binlog；事务出错或回�
 ### 更新语句为什么需要两阶段提交？
 
 更新语句大致流程：
-
+```
     执行器
       ↓
     redo log prepare
@@ -591,15 +565,6 @@ MySQL 的备份、主从和主备同步主要依赖 binlog；事务出错或回�
     redo log commit
 
 这样可以保证 redo log 和 binlog 状态一致，避免主库已经提交但 binlog 没记录，或者 binlog 已记录但引擎事务未提交。
-### 两阶段提交
-
-```text
-更新流程：
-1. 写 redo log（prepare 状态）
-2. 写 binlog
-3. redo log 标记 commit
-
-目的：保证 redo log 与 binlog 一致，主从数据不丢失
 ```
 
 ---
