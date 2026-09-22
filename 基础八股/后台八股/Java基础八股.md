@@ -400,8 +400,11 @@ Java 泛型主要是编译期特性，编译后类型参数会被擦除并替换
 - 线程通常拥有独立的栈和程序计数器；
 - 进程隔离性更强，线程创建和切换成本更低。
 
-### Q36. Java 并发的三大特性是什么？
 
+
+### Q36. Java 并发/并行区别，并发的三大特性是什么？
+并发：两个及两个以上的作业在同一 时间段 内执行。
+并行：两个及两个以上的作业在同一 时刻 执行。
 - **原子性：** 操作不可被打断；
 - **可见性：** 一个线程的修改能被其他线程看到；
 - **有序性：** 执行结果符合代码逻辑，避免重排序问题。
@@ -489,6 +492,33 @@ CAS 是比较并交换：比较内存值是否等于预期值，相等则更新�
 - DiscardPolicy：直接丢弃；
 - DiscardOldestPolicy：丢弃队列中最旧的任务，再尝试提交。
 
+
+### Q43.1. 线程池常用的阻塞队列有哪些？
+
+**参考答案：**
+
+| 队列 | 特点 | 常见场景 |
+|---|---|---|
+| ArrayBlockingQueue | 有界数组队列，容量固定 | 控制任务堆积，常用于生产环境 |
+| LinkedBlockingQueue | 链表队列，可有界或近似无界 | 吞吐较好，但要注意队列过大 |
+| SynchronousQueue | 不存储任务，直接交给线程 | 快速提交和线程扩容 |
+| PriorityBlockingQueue | 按优先级取任务，通常无界 | 优先级任务调度 |
+| DelayQueue | 元素到期后才能取出 | 延迟任务、定时任务 |
+
+阻塞队列满时，生产者可能等待；队列为空时，消费者可能等待。队列选择会直接影响吞吐、延迟和内存风险。
+
+### Q43.2. Executors 返回线程池对象有什么弊端？
+
+**参考答案：**
+
+不建议直接使用 Executors 创建线程池，因为默认参数可能导致资源失控：
+
+- newFixedThreadPool 和 newSingleThreadExecutor 使用近似无界的 LinkedBlockingQueue，任务堆积可能导致 OOM；
+- newCachedThreadPool 使用 SynchronousQueue，线程数几乎无界，突发任务可能创建大量线程；
+- newScheduledThreadPool 也可能积累大量延迟任务，缺少业务级容量控制。
+
+**推荐做法：** 直接使用 ThreadPoolExecutor，明确设置核心线程数、最大线程数、队列容量、线程工厂和拒绝策略。
+
 ### Q44. 线程池线程数如何设置？
 
 - CPU 密集型：通常接近 CPU 核数；
@@ -535,6 +565,51 @@ ThreadLocal 为每个线程保存独立副本，适合保存用户上下文、�
 
 **注意：** 在线程池中使用后要及时 remove，避免线程复用导致数据串用和内存泄漏。
 
+
+### Q48.1. ThreadLocal 的底层原理是什么？
+
+**参考答案：**
+
+每个线程内部都有一个 ThreadLocalMap，ThreadLocal 作为 key，线程自己的变量作为 value：
+
+    Thread
+      └── ThreadLocalMap
+            └── Entry(ThreadLocal -> value)
+
+调用 set/get 时，ThreadLocal 先获取当前线程，再操作当前线程的 ThreadLocalMap，因此不同线程之间互不影响。
+
+ThreadLocalMap 的 Entry 对 ThreadLocal 使用弱引用，但 value 仍可能是强引用。
+
+### Q48.2. ThreadLocal 为什么可能发生内存泄漏？
+
+**参考答案：**
+
+当 ThreadLocal 对象没有外部强引用时，Entry 的 key 可能被 GC 回收，但 value 仍然存在于线程的 ThreadLocalMap 中：
+
+    key = null，value 仍被 ThreadLocalMap 引用
+
+如果线程是线程池中的长期复用线程，value 可能长期无法释放，还可能造成数据残留和内存泄漏。
+
+**解决方式：**
+
+- 使用完 ThreadLocal 后主动调用 remove；
+- 在线程池任务的 finally 中清理；
+- 不要把大对象或生命周期很长的对象长期放入 ThreadLocal。
+
+### Q48.3. 如何跨线程传递 ThreadLocal 的值？
+
+**参考答案：**
+
+普通 ThreadLocal 的值不会自动传递到子线程，因为每个线程都有独立的 ThreadLocalMap。
+
+常见方案：
+
+- InheritableThreadLocal：创建子线程时复制父线程值，但不适合线程池，因为线程复用时不会每次重新复制；
+- TransmittableThreadLocal：配合 TTL 等工具，在任务提交和执行时传递上下文，适合线程池；
+- 手动把上下文作为任务参数传递：最明确，也最容易控制生命周期。
+
+**面试结论：** 跨线程传递用户信息、链路追踪等上下文时，要注意线程池复用导致的上下文污染，任务结束后及时清理。
+
 ### Q49. CompletableFuture 有什么作用？
 
 CompletableFuture 用于异步任务编排，可以处理任务依赖、结果转换、任务组合和异常。
@@ -551,6 +626,9 @@ CompletableFuture 用于异步任务编排，可以处理任务依赖、结果�
 - thenCombine：组合两个任务；
 - allOf：等待多个任务；
 - exceptionally：处理异常。
+
+线程池中线程异常后，销毁还是复用？
+使用 execute() 时，未捕获异常导致线程终止，线程池创建新线程替代；使用 submit() 时，异常被封装在 Future 中，线程继续复用。
 
 ---
 
