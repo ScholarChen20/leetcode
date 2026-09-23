@@ -13,10 +13,9 @@
 输出：1
 """
 from typing import List
-
-
 class Solution:
     def numIslands(self, grid: List[List[str]]) -> int:
+        """DFS:从首节点开始往后遍历"""
         if not grid: return 0
         row = len(grid)
         col = len(grid[0])
@@ -38,13 +37,33 @@ class Solution:
                     dfs(i, j)
         return cnt
 
+    def numIslands2(self, grid: List[List[str]]) -> int:
+        """bfs: """
+        if not grid: return 0
+        row = len(grid)
+        col = len(grid[0])
+        cnt = 0
+        for i in range(row):
+            for j in range(col):
+                if grid[i][j] == '1':
+                    cnt += 1
+                    stack = [(i, j)]
+                    while stack:
+                        x, y = stack.pop()
+                        if 0 <= x < row and 0 <= y < col and grid[x][y] == '1':
+                            grid[x][y] = '0'
+                            stack.append((x + 1, y))
+                            stack.append((x - 1, y))
+                            stack.append((x, y + 1))
+                            stack.append((x, y - 1))
+        return cnt
 if __name__ == '__main__':
     solution = Solution()
     grid = [
   ['1','1','1','1','0'],
   ['1','1','0','1','0'],
   ['1','1','0','0','0'],
-  ['0','0','0','0','1']
+  ['0','0','0','0','0']
 ]
-    print(solution.numIslands(grid))
-
+    # print(solution.numIslands(grid))
+    print(solution.numIslands2(grid))

@@ -15,6 +15,7 @@
 """
 class Solution:
     def isValid(self, s: str) -> bool:
+        """解法一：单调栈"""
         mapping = {')': '(', ']': '[', '}': '{'}
         stack = []
         for c in s:
@@ -25,6 +26,12 @@ class Solution:
                     return False
                 stack.pop()
         return not stack
+
+    def isValid2(self, s: str) -> bool:
+        """解法二： 使用replace方法"""
+        while '()' in s or '[]' in s or '{}' in s:
+            s = s.replace('()', '').replace('[]', '').replace('{}', '')
+        return not s
 
 
 if __name__ == '__main__':
