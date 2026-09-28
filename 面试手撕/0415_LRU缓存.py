@@ -61,21 +61,21 @@ class LRUCache:
             node.value = value
             self.moveToHead(node)
 
-    def addToHead(self, node):
+    def addToHead(self, node):  # 添加节点到头部
         node.prev = self.head
         node.next = self.head.next
         self.head.next.prev = node
         self.head.next = node
 
-    def removeNode(self, node):
+    def removeNode(self, node):  # 移除节点
         node.prev.next = node.next
         node.next.prev = node.prev
 
-    def moveToHead(self, node):
+    def moveToHead(self, node): # 移动到头节点
         self.removeNode(node)
         self.addToHead(node)
 
-    def removeTail(self):
+    def removeTail(self):  # 移除尾部节点并返回
         node = self.tail.prev
         self.removeNode(node)
         return node
