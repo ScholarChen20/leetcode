@@ -29,24 +29,25 @@ class Solution:
                 char_set.add(str) # 添加当前字符
         return max_length
 
-    def lengthOfLongestSubstring2(self, s: str):
-        """ 中心扩展法，时间复杂度O(n^2)，空间复杂度O(1), """
-        n = len(s)
-        if n < 2:
-            return n
-        max_len = 1
-        for i in range(n):
-            left ,right = i - 1 , i + 1
-            while left>=0 and s[left] != s[i]:
-                left -= 1
-            while right < n and s[right] != s[i]:
-                right += 1
-            max_len = max(max_len, right - left - 1)
-        return max_len
+    def lengthOfLongestSubstring2(self, s: str) -> int:
+        """暴力枚举，以每个位置作为子串左边界，时间复杂度 O(n^2)，空间复杂度 O(n)。"""
+        max_length = 0
+
+        for left in range(len(s)):
+            char_set = set()
+            for right in range(left, len(s)):
+                if s[right] in char_set:
+                    break
+                char_set.add(s[right])
+                max_length = max(max_length, right - left + 1)
+
+        return max_length
+
+
 
 if __name__ == '__main__':
     s = Solution()
     str1 = "abcabcbb"
-    str2 = "bvbdvb"
-    print(s.lengthOfLongestSubstring(str1))
-    print(s.lengthOfLongestSubstring(str2))
+    str2 = "bbbbb"
+    print(s.lengthOfLongestSubstring2(str1))
+    print(s.lengthOfLongestSubstring2(str2))

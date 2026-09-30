@@ -21,6 +21,7 @@ class Solution:
                 slow+=1
             fast+=1
         return slow
+    
 if __name__ == '__main__':
     m = Solution()
     print(m.removeDuplicates(nums=[1,1,1,2,2,3]))

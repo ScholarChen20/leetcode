@@ -1,9 +1,11 @@
 """
 长度最小的子数组
-给定一个含有 n个正整数的数组和一个正整数 target 。找出该数组中满足其和 ≥ target 的长度最小的 连续子数组，并返回其长度。如果不存在符合条件的子数组，返回 0  示例 1：
+给定一个含有 n个正整数的数组和一个正整数 target 。找出该数组中满足其和 ≥ target 的长度最小的 连续子数组，并返回其长度。如果不存在符合条件的子数组，返回 0
+
+示例 1：
 输入：target = 7, nums = [2,3,1,2,4,3]
 输出：2
-解释：子数组 [4,3] 是该条件下的长度最小的子数组。
+解释：子数组[4,3]是该条件下的长度最小的子数组。
 """
 from cmath import inf
 from typing import List
@@ -22,7 +24,6 @@ class Solution:
                 left +=1
             right += 1
         return ans if ans != inf else 0
-
 
 
 if __name__ == '__main__':
