@@ -1,6 +1,5 @@
 """"
 给你一个有序数组 nums ，请你 原地 删除重复出现的元素，使得出现次数超过两次的元素只出现两次 ，返回删除后数组的新长度。
-
 不要使用额外的数组空间，你必须在 原地 修改输入数组 并在使用 O(1) 额外空间的条件下完成。
 
 输入：nums = [1,1,1,2,2,3]
@@ -10,11 +9,13 @@
 from typing import List
 class Solution:
     def removeDuplicates(self, nums: List[int]) -> int:
+        # 快慢指针 slow 指向的是当前需要被覆盖的元素
         slow=fast=2
         n=len(nums)
         if n <= 2:
             return 2
 
+        # 使用快慢指针遍历数组， 如果当前元素和slow-2位置的元素不相等，则将fast位置的元素赋值给slow位置的元素，slow+1，fast+1
         while fast<n:
             if nums[slow-2]!=nums[fast]:
                 nums[slow]=nums[fast]

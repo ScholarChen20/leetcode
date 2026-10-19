@@ -7,8 +7,6 @@ bool remove(int val) 当元素 val 存在时，从集合中移除该项，并返
 int getRandom() 随机返回现有集合中的一项（测试用例保证调用此方法时集合中至少存在一个元素）。每个元素应该有 相同的概率 被返回。
 你必须实现类的所有函数，并满足每个函数的 平均 时间复杂度为 O(1) 。
 
-
-
 示例：
 
 输入
@@ -19,10 +17,8 @@ int getRandom() 随机返回现有集合中的一项（测试用例保证调用�
 
 """
 from random import choice
-
-
 class RandomizedSet:
-
+    # 使用哈希表和数组实现 O(1) 的时间复杂度, 数组存储元素，哈希表存储元素和索引的映射
     def __init__(self):
         self.nums=[]
         self.indices={}
@@ -31,13 +27,13 @@ class RandomizedSet:
         if val in self.indices:
             return False
         self.nums.append(val)
-        self.indices[val]=len(self.nums)-1
+        self.indices[val]=len(self.nums)-1 # 存储的是索引
         return True
 
     def remove(self, val: int) -> bool:
         if val not in self.indices:
             return False
-        index=self.indices[val]
+        index=self.indices[val] # 获取索引
         last_val=self.nums[-1]
         self.nums[index]=last_val
         self.indices[last_val]=index

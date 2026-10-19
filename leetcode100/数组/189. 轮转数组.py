@@ -16,9 +16,18 @@ from typing import List
 
 class Solution:
     def rotate(self, nums: List[int], k: int) -> None:
+        # 三次反转
         k=k%len(nums)
         nums =  nums[-k:] + nums[:-k]
         return nums
+
+    def rotate2(self,nums:List[int],k:int):
+        # 使用额外空间
+        k = k % len(nums)
+        result = [0] * len(nums)
+        for i in range(len(nums)):
+            result[(i + k) % len(nums)] = nums[i]
+        return result
 
 if __name__ == '__main__':
     s=Solution()

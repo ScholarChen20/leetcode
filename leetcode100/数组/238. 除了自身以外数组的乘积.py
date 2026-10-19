@@ -10,11 +10,7 @@
 from typing import List
 class Solution:
     def productExceptSelf(self, nums: List[int]) -> List[int]:
-        """
-         前缀和后缀乘积，然后相乘 
-        :param nums:
-        :return:
-        """
+        """ 前缀和后缀乘积，然后相乘, 时间复杂度O(n), 空间复杂度O(1) """
         n = len(nums)
         res = [1] * n
         left = 1
