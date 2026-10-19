@@ -13,14 +13,20 @@ from .tools import WorkspaceTools
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run a small local agent over a workspace")
+    parser = argparse.ArgumentParser(
+        description="Run a small local agent over a workspace"
+    )
     parser.add_argument("request", help="Task for the agent")
     parser.add_argument("--workspace", type=Path, default=Path.cwd())
-    parser.add_argument("--model", default="qwen3:8b", help="Installed Ollama model name")
+    parser.add_argument(
+        "--model", default="qwen3:8b", help="Installed Ollama model name"
+    )
     parser.add_argument("--base-url", default="http://127.0.0.1:11434")
     parser.add_argument("--max-steps", type=int, default=8)
     parser.add_argument("--allow-write", action="store_true")
-    parser.add_argument("--trace", action="store_true", help="Print tool calls and results")
+    parser.add_argument(
+        "--trace", action="store_true", help="Print tool calls and results"
+    )
     args = parser.parse_args(argv)
 
     try:

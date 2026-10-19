@@ -30,18 +30,25 @@ class HarnessTests(unittest.TestCase):
                     "role": "assistant",
                     "content": "",
                     "tool_calls": [
-                        {"function": {"name": "read_file", "arguments": {"path": "note.txt"}}}
+                        {
+                            "function": {
+                                "name": "read_file",
+                                "arguments": {"path": "note.txt"},
+                            }
+                        }
                     ],
                 },
                 {"role": "assistant", "content": "The file says hello."},
             ]
         )
-        result = Agent(model, WorkspaceTools(self.root)).run("Read the note", trace=True)
+        agent = Agent(model, WorkspaceTools(self.root))
+        result = agent.run("Read the note", trace=True)
         self.assertEqual(result.answer, "The file says hello.")
         self.assertEqual(result.steps, 2)
         self.assertEqual(result.trace[0]["result"]["result"]["content"], "hello")
         self.assertEqual(model.seen[1][0][-1]["role"], "tool")
-        self.assertNotIn("write_file", [tool["function"]["name"] for tool in model.seen[0][1]])
+        available_names = [tool["function"]["name"] for tool in model.seen[0][1]]
+        self.assertNotIn("write_file", available_names)
 
     def test_path_cannot_escape_workspace(self):
         tools = WorkspaceTools(self.root)
@@ -51,25 +58,42 @@ class HarnessTests(unittest.TestCase):
 
     def test_git_metadata_is_not_accessible(self):
         tools = WorkspaceTools(self.root, allow_write=True)
-        result = json.loads(tools.execute("write_file", {"path": ".git/config", "content": "x"}))
+        response = tools.execute(
+            "write_file", {"path": ".git/config", "content": "x"}
+        )
+        result = json.loads(response)
         self.assertFalse(result["ok"])
         self.assertIn("Git metadata", result["error"])
 
     def test_write_requires_flag_and_explicit_overwrite(self):
         readonly = WorkspaceTools(self.root)
-        self.assertFalse(json.loads(readonly.execute("write_file", {"path": "new.txt", "content": "a"}))["ok"])
+        denied = readonly.execute("write_file", {"path": "new.txt", "content": "a"})
+        self.assertFalse(json.loads(denied)["ok"])
         writable = WorkspaceTools(self.root, allow_write=True)
-        first = json.loads(writable.execute("write_file", {"path": "new.txt", "content": "a"}))
-        second = json.loads(writable.execute("write_file", {"path": "new.txt", "content": "b"}))
-        third = json.loads(writable.execute("write_file", {"path": "new.txt", "content": "b", "overwrite": True}))
+        first = json.loads(
+            writable.execute("write_file", {"path": "new.txt", "content": "a"})
+        )
+        second = json.loads(
+            writable.execute("write_file", {"path": "new.txt", "content": "b"})
+        )
+        third = json.loads(
+            writable.execute(
+                "write_file",
+                {"path": "new.txt", "content": "b", "overwrite": True},
+            )
+        )
         self.assertTrue(first["ok"])
         self.assertFalse(second["ok"])
         self.assertTrue(third["ok"])
         self.assertEqual((self.root / "new.txt").read_text(encoding="utf-8"), "b")
 
     def test_step_limit_stops_repeated_tool_calls(self):
-        call = {"role": "assistant", "tool_calls": [{"function": {"name": "list_files", "arguments": {}}}]}
-        result = Agent(FakeModel([call, call]), WorkspaceTools(self.root), max_steps=2).run("List files")
+        call = {
+            "role": "assistant",
+            "tool_calls": [{"function": {"name": "list_files", "arguments": {}}}],
+        }
+        agent = Agent(FakeModel([call, call]), WorkspaceTools(self.root), max_steps=2)
+        result = agent.run("List files")
         self.assertTrue(result.stopped_by_limit)
         self.assertEqual(result.steps, 2)
 

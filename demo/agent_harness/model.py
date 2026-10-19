@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -26,7 +27,11 @@ class OllamaClient:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 
-    def complete(self, messages: list[dict], tools: list[dict]) -> dict:
+    def complete(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+    ) -> dict[str, Any]:
         payload = json.dumps(
             {
                 "model": self.model,
