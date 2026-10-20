@@ -27,7 +27,7 @@ class Solution:
                 break
             if k > 0 and nums[k] == nums[k-1]:  # 去重
                 continue
-            i,j = k+1, n-1 # 双指针
+            i,j = k+1, n-1 # 从前往后遍历，设置最左指针K，双指针i，j位于该区间的两侧
             while i<j:
                 s = nums[k] + nums[j] + nums[i]
                 if s < 0:
