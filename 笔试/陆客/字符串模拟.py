@@ -12,8 +12,6 @@ hello
 nowcoder
 输出： odernowc
 """
-
-
 import sys
 from collections import deque
 # 设置递归深度和读取方式，防止大数据量出错
