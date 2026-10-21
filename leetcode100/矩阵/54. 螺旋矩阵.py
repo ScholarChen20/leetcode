@@ -44,3 +44,12 @@ class Solution:
                     res.append(matrix[i][left])
                 left += 1
         return res
+
+if __name__ == '__main__':
+    s = Solution()
+    test_matrix = [
+        [1, 2, 3],
+        [4, 5, 6],
+        [7, 8, 9]
+    ]
+    print(s.spiralOrder(test_matrix))
