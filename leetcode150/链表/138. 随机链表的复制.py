@@ -20,7 +20,7 @@ class ListNode:
         self.random = random
 
 class Solution:
-    def copyRandomList(self, head: 'ListNode') -> 'ListNode':
+    def copyRandomList(self, head: 'ListNode') -> 'ListNode': # 时间复杂度O(n)，空间复杂度O(1)
         if not head: return
         cur = head
         # 1. 复制各节点，并构建拼接链表
@@ -47,7 +47,7 @@ class Solution:
         return res      # 返回新链表头节点
 
 class Solution1:
-    def copyRandomList(self, head: 'ListNode') -> 'ListNode':
+    def copyRandomList(self, head: 'ListNode') -> 'ListNode': #解法二： 
         if not head: return
         dic = {}
         # 3. 复制各节点，并建立 “原节点 -> 新节点” 的 Map 映射
