@@ -419,6 +419,54 @@ synchronized 保证同一时刻只有一个线程进入临界区，并保证锁�
 - synchronized 是可重入锁；
 - 异常退出时 JVM 会自动释放锁。
 
+### Q37.1. synchronized 的底层原理是什么？
+
+**参考答案：** synchronized 的底层依赖 JVM 的监视器锁（Monitor），用对象头里的 Mark Word 记录锁状态，最终由操作系统的互斥量（mutex）保证互斥。
+
+先看字节码层面：
+
+- 同步代码块：编译后生成 `monitorenter` 和 `monitorexit` 指令，而且通常有两个 `monitorexit`（正常路径一个、异常路径一个），保证抛异常时也能释放锁；
+- 同步方法：方法访问标志位 `ACC_SYNCHRONIZED`，调用时由 JVM 隐式加锁解锁，不需要指令。
+
+再看对象与 Monitor 的关系：
+
+    对象头 Mark Word  →  指向 ObjectMonitor
+    ObjectMonitor
+    ├── _owner      ：当前持有锁的线程
+    ├── _recursions ：重入次数
+    ├── _EntryList  ：竞争锁失败、阻塞等待的线程
+    └── _WaitSet    ：调用 wait() 后挂起的线程
+
+**可重入的实现：** 线程再次进入同步块时，先判断 `_owner` 是不是自己，是则 `_recursions + 1`；退出时减 1，减到 0 才真正释放锁。
+
+**面试结论：** 按「字节码 → 对象头 Mark Word → ObjectMonitor → 操作系统 mutex」逐层往下说，是最容易被认可的答法。注意说清楚：重量级锁才有真正的 Monitor 膨胀，轻量级锁阶段还没走到这一步。
+
+### Q37.2. synchronized 的锁升级过程是怎样的？
+
+JDK 6 之后为了减少无谓的内核态切换，引入了锁升级：无锁 → 偏向锁 → 轻量级锁 → 重量级锁，通常只能升级不能降级。
+
+| 锁状态 | Mark Word 记录内容 | 加锁方式 | 适用场景 |
+|---|---|---|---|
+| 无锁 | hash、分代年龄，锁标志 01 | 无 | 无线程竞争 |
+| 偏向锁 | 线程 ID + epoch，标志 01 | 首次 CAS 记录线程 ID，同一线程后续直接进入 | 始终只有一个线程访问 |
+| 轻量级锁 | 指向栈帧中 Lock Record 的指针，标志 00 | CAS 替换 Mark Word，失败则自旋 | 线程交替执行，竞争时间极短 |
+| 重量级锁 | 指向 ObjectMonitor 的指针，标志 10 | 进入 EntryList 阻塞，涉及用户态/内核态切换 | 竞争激烈、临界区执行时间长 |
+
+几个容易踩的点：
+
+- **偏向锁已被废弃。** JDK 15 起默认关闭（JEP 374），JDK 18 正式移除。原因是撤销偏向锁需要 STW，而现代应用大量使用并发容器，偏向锁命中率低、维护成本高。被问到就说"知道它存在、知道为什么被移除"，不要当成现役机制讲。
+- **轻量级锁适合"交替"而不是"同时"。** 它的本质是用 CAS 加自旋代替阻塞，两个线程真正同时抢同一把锁时会很快膨胀。
+- **自旋失败才膨胀。** 自适应自旋仍然失败后，才把 Mark Word 改成指向 ObjectMonitor，线程进入内核态挂起。
+
+**面试结论：** 锁升级的核心目的是"无竞争或轻竞争时尽量待在用户态"，用 CAS 和自旋换取性能；只有真打起来才退化成操作系统互斥量。
+
+### Q37.3. synchronized 有哪些锁优化手段？
+
+- **自旋锁：** 竞争时不立刻阻塞，而是循环重试一小段时间，避免线程切换开销；
+- **自适应自旋：** 自旋次数不固定，由上一次在同一把锁上的成功率动态决定，JVM 会"学习"；
+- **锁消除：** JIT 通过逃逸分析发现锁对象不会逃逸出当前线程（例如方法内 new 的局部 StringBuilder），直接把同步去掉；
+- **锁粗化：** 把循环内多次连续的加锁解锁合并成一次大的加锁，减少反复申请释放的开销。
+
 ### Q38. synchronized 和 ReentrantLock 有什么区别？
 
 | 对比 | synchronized | ReentrantLock |
@@ -432,32 +480,233 @@ synchronized 保证同一时刻只有一个线程进入临界区，并保证锁�
 
 使用 ReentrantLock 时，必须在 finally 中释放锁。
 
+### Q38.1. AQS 的原理是什么？
+
+**参考答案：** AQS（AbstractQueuedSynchronizer）用「一个 volatile int 状态位 + 一个双向等待队列」实现了锁和同步器，ReentrantLock、Semaphore、CountDownLatch 都建立在它之上。
+
+    volatile int state   ← 用 CAS 修改表示同步状态
+          │
+          ▼
+    CLH 变体双向队列
+    head → Node(thread) ⇄ Node(thread) ⇄ Node(thread) ← tail
+
+- **state 的含义由子类决定：** ReentrantLock 中表示重入次数；Semaphore 中表示可用许可数；CountDownLatch 中表示未完成的计数；
+- **获取失败的线程入队：** 包装成 Node 加入队尾，然后 `LockSupport.park()` 挂起；
+- **释放时唤醒后继：** `unpark` 队列中下一个有效节点；
+- **模板方法模式：** AQS 只定义排队和阻塞的骨架，留出 `tryAcquire` / `tryRelease` 给子类实现；
+- **公平与非公平：** 公平锁在 `tryAcquire` 里先判断队列前面有没有人排队，非公平锁直接抢（可能插队），因此非公平锁吞吐更高。
+
+**面试结论：** 一句话概括——AQS 把"抢不到资源怎么办"（排队 + 挂起 + 唤醒）这套通用逻辑抽出来，子类只需要定义"什么算抢到"。
+
 ### Q39. volatile 有什么作用？
 
-volatile 主要保证可见性，并限制部分指令重排序。
+**参考答案：** volatile 保证共享变量的可见性和有序性（禁止指令重排序），但不保证原子性。
 
-适合状态标记：
+三个语义分别对应：
 
+- **可见性：** 写操作立即刷回主内存，并让其他线程中该变量的缓存行失效；读操作会重新从主内存加载，因此能读到最新值；
+- **有序性：** 通过内存屏障禁止 volatile 读写与前后指令发生重排序；
+- **不保证原子性：** `count++` 是读、改、写三步，多线程下依然会丢失更新。
+
+适合的场景：
+
+    // 1. 状态标记位
     private volatile boolean running = true;
 
-不能保证复合操作的原子性：
+    // 2. DCL 单例的实例引用
+    private volatile Singleton instance;
 
-    count++;
+    // 3. 一写多读的配置、开关、事件通知标志
 
-计数场景应使用 AtomicInteger 或锁。
+不适合的场景：
+
+- 计数、累加类复合操作 → 用 AtomicInteger、LongAdder 或锁；
+- 多个变量之间需要保持一致 → 用锁，volatile 只能保证单个变量的可见性。
+
+### Q39.1. volatile 的底层是如何实现的？
+
+**参考答案：** 从字节码到硬件一共三层，答题按这个顺序说最稳。
+
+1. **字节码层：** 字段访问标志加 `ACC_VOLATILE`，JVM 看到这个标志就知道要特殊处理；
+2. **JVM 层：** 按 JMM 规范在 volatile 写前后插入 `StoreStore` + `StoreLoad` 屏障，在读前后插入 `LoadLoad` + `LoadStore` 屏障，禁止跨屏障重排序；
+3. **硬件层：** x86 上 volatile 写最终编译成带 `lock` 前缀的指令（如 `lock addl $0x0,(%rsp)`），`lock` 前缀做了三件事：
+   - 把当前 CPU 缓存行立即写回主内存；
+   - 基于缓存一致性协议（MESI）让其他 CPU 中该缓存行失效；
+   - 充当内存屏障，阻止指令重排。
+
+**追问准备：** volatile 变量本身是原子的（JLS 保证包括 long/double 在内的 volatile 读写原子），但"读 + 改 + 写"这一串不是原子的，这两件事不要混为一谈。
+
+### Q39.2. 什么是 JMM 和 happens-before？
+
+**参考答案：** JMM（Java 内存模型）是 JVM 定义的一套并发语义规范，它把内存抽象成主内存（所有线程共享）和 工作内存（每个线程私有，可以理解为 CPU 缓存和寄存器的抽象），并规定线程只能通过这八个原子操作交互：
+
+    lock / unlock   read / load   use / assign   store / write
+
+happens-before 是判断"一个操作的结果是否对另一个操作可见"的依据，主要规则：
+
+- **程序顺序规则：** 同一线程内，前面的操作 happens-before 后面的操作；
+- **监视器锁规则：** 对同一把锁的 unlock happens-before 后续的 lock；
+- **volatile 规则：** 对 volatile 变量的写 happens-before 后续对该变量的读；
+- **线程启动规则：** `Thread.start()` happens-before 子线程中的任何操作；
+- **线程终止规则：** 线程内所有操作 happens-before 其他线程从 `join()` 返回；
+- **传递性：** A hb B，B hb C，则 A hb C。
+
+**注意：** happens-before 不等于"时间上先发生"，它是可见性约束。两条指令在时间上没顺序，也可能存在 happens-before 关系。
+
+### Q39.3. 为什么 DCL 单例必须加 volatile？
+
+这是 volatile 在业务代码里最高频的考点。
+
+    public class Singleton {
+        private static volatile Singleton instance;   // 少了 volatile 就是错的
+
+        public static Singleton getInstance() {
+            if (instance == null) {                  // 第一次检查
+                synchronized (Singleton.class) {
+                    if (instance == null) {          // 第二次检查
+                        instance = new Singleton();  // ① 问题在这里
+                    }
+                }
+            }
+            return instance;
+        }
+    }
+
+① 这一行在字节码层面是三步：
+
+    1. 分配内存空间
+    2. 调用构造器初始化对象
+    3. 把引用赋值给 instance
+
+没有 volatile 时，JIT 或 CPU 可能把第 3 步重排到第 2 步之前。此时另一个线程走到外层 `if (instance == null)`，发现不为 null 就直接返回，拿到的是一个"内存已分配但还没初始化完"的半成品对象，后续使用可能空指针或读到默认值。
+
+volatile 的作用就是禁止这个重排序。
+
+**面试结论：** 一句话——volatile 在这里不是为了可见性，而是为了禁止 `new` 过程中的指令重排。
+
+### Q39.4. volatile 和 synchronized 有什么区别？
+
+| 对比 | volatile | synchronized |
+|---|---|---|
+| 原子性 | 不保证复合操作 | 保证临界区整体原子 |
+| 可见性 | 保证 | 保证（解锁前刷新、加锁后重读） |
+| 有序性 | 禁止指令重排 | 保证临界区内代码的原子与有序 |
+| 是否阻塞 | 不阻塞 | 会阻塞、可能涉及内核态切换 |
+| 作用粒度 | 单个变量 | 代码块或方法 |
+| 典型场景 | 状态标记、DCL | 复合操作、多变量一致性 |
+
+**面试结论：** volatile 是"轻量级的同步"，解决的是可见性和重排，不是互斥；需要互斥时必须用锁。
 
 ### Q40. 什么是 CAS？有什么问题？
 
-CAS 是比较并交换：比较内存值是否等于预期值，相等则更新，否则失败重试。
+**参考答案：** CAS（Compare And Swap）是比较并交换：比较内存中的当前值是否等于预期值，相等则更新为新值，否则放弃并重试。整个"比较 + 更新"由 CPU 一条指令完成，是原子的。
 
-优点：非阻塞，适合简单原子更新。
+Java 中的入口是 `Unsafe.compareAndSwapInt` 等方法，底层对应 x86 的 `cmpxchg` 指令（配合 `lock` 前缀保证多核原子性），JDK 9 之后更推荐用 `VarHandle` 替代 Unsafe。
 
-问题：
+    当前值 == 预期值 ?
+        ├── 是 → 写入新值，返回成功
+        └── 否 → 不做任何修改，返回失败（通常外层自旋重试）
 
-- 失败重试会消耗 CPU；
-- 不适合直接保护多个变量的一致性；
-- 可能出现 ABA；
-- 高竞争下性能可能下降。
+优点：非阻塞、无锁竞争时开销极小，适合简单的原子更新。
+
+问题（面试必背四点）：
+
+- **自旋开销：** 高竞争下大量线程 CAS 失败反复重试，空耗 CPU；
+- **只能保证单个变量原子性：** 多个变量要一起改，只能封装成对象用 `AtomicReference`，或者直接加锁；
+- **ABA 问题：** 值被改走又改回来，CAS 察觉不到中间变化；
+- **公平性差：** 谁抢到算谁的，可能出现线程饥饿，也不保证顺序。
+
+### Q40.1. AtomicInteger 是怎么用 CAS 实现原子自增的？
+
+核心是「volatile value + 字段偏移量 + CAS 自旋」：
+
+    public final int getAndIncrement() {
+        return unsafe.getAndAddInt(this, valueOffset, 1);
+    }
+
+    // Unsafe#getAndAddInt 的真实写法（JDK 8）
+    public final int getAndAddInt(Object o, long offset, int delta) {
+        int v;
+        do {
+            v = getIntVolatile(o, offset);                            // 读当前值
+        } while (!compareAndSwapInt(o, offset, v, v + delta));        // 失败就重读重试
+        return v;
+    }
+
+- `valueOffset` 是 value 字段在对象内存中的偏移量，通过反射在静态代码块里取得；
+- value 本身用 volatile 修饰，保证读到的是最新值，CAS 才能基于正确预期值比较；
+- 失败重试而不是阻塞，这就是所谓的"无锁 / 自旋"。
+
+### Q40.2. 什么是 ABA 问题？如何解决？
+
+线程 1 读到 A；线程 2 把 A 改成 B，又改回 A；线程 1 的 CAS 依然成功，但它并不知道中间已经变过。
+
+单纯的数值替换场景通常无害，但**依赖对象状态**的场景就有风险，比如链表节点被回收后复用、栈顶引用、账户状态流转。
+
+解决方式：
+
+| 方案 | 做法 | 特点 |
+|---|---|---|
+| AtomicStampedReference | 比较「引用 + 版本号 stamp」两部分 | 最常用，能识别"改过又改回" |
+| AtomicMarkableReference | 只加一个 boolean 标记 | 只关心"是否被改过"，不关心改了几次 |
+| 加锁 | 直接互斥 | 最简单，但放弃无锁收益 |
+
+### Q40.3. AtomicLong 和 LongAdder 有什么区别？
+
+| 对比 | AtomicLong | LongAdder |
+|---|---|---|
+| 结构 | 单个 volatile value | base + Cell 数组 |
+| 高并发写 | 所有线程 CAS 同一个值，冲突高 | 分散到不同 Cell，冲突大幅降低 |
+| 读取 | 直接读，强一致 | `sum()` 汇总各 Cell，弱一致 |
+| 内存占用 | 小 | 更大（空间换时间） |
+| 适用场景 | 需要精确读取、竞争不激烈 | 高并发统计计数、监控埋点 |
+
+**面试结论：** LongAdder 本质是分段思想——把热点打散到多个 Cell，最后再汇总，和 ConcurrentHashMap 的分段锁思路一脉相承。代价是 `sum()` 期间可能读到不一致的中间结果。
+
+### Q40.4. 什么是乐观锁和悲观锁？
+
+- **悲观锁：** 认为并发冲突一定会发生，操作前先加锁，其他线程阻塞等待；
+- **乐观锁：** 认为冲突较少，不加锁直接操作，提交时再校验数据有没有被别人改过，冲突则失败重试。
+
+| 对比 | 悲观锁 | 乐观锁 |
+|---|---|---|
+| 核心思想 | 先加锁，再操作 | 先操作，提交时校验 |
+| 是否阻塞 | 是，抢不到就等 | 否，失败重试 |
+| 开销来源 | 加锁、线程切换、内核态开销 | 无锁开销，冲突时重试成本 |
+| 适用场景 | 写多、冲突多、临界区较长 | 读多写少、冲突少 |
+| Java 体现 | synchronized、ReentrantLock | CAS、AtomicInteger |
+| 数据库体现 | `select ... for update`、InnoDB 行锁 | version 字段 + where 条件校验 |
+
+**选型口诀：** 冲突少用乐观锁，冲突多用悲观锁；读多写少用乐观锁，长事务和强一致用悲观锁。
+
+**注意：** 严格说 Java 里的 CAS 是"无锁"，数据库里的 version 才是教科书式乐观锁，两者是实现手段和思想的关系，面试时讲清这层区别会加分。
+
+### Q40.5. 数据库乐观锁怎么写？有哪些坑？
+
+标准写法是用 version 字段做条件校验：
+
+    -- 1. 先查询，拿到当前版本号
+    select id, stock, version from goods where id = 1;
+
+    -- 2. 更新时把版本号作为条件，同时递增
+    update goods set stock = stock - 1, version = version + 1
+    where id = 1 and version = 5;
+
+然后判断 `update` 的影响行数：返回 1 表示成功，返回 0 表示期间被别人改过，需要重试或提示用户。
+
+几个坑：
+
+- **重试必须有上限。** 高冲突下会疯狂失败，通常重试 2~3 次后直接失败，避免拖垮数据库；
+- **业务字段和 version 必须在同一条 update 里。** 否则中间状态可能被其他事务读到；
+- **乐观锁只保证更新不覆盖别人的修改，不保证读到的数据是最新的。** 业务判断如果依赖"读到的旧值"，仍需加锁或改用当前读；
+- **高冲突场景应该换悲观锁。** 重试率飙升时，乐观锁的性能优势会反转。
+
+对比一下悲观锁的写法与风险：
+
+    -- 悲观锁：一定要走索引，否则 InnoDB 可能锁表而不是锁行
+    select * from goods where id = 1 for update;
+
+**面试结论：** 乐观锁 = 版本号 + 条件更新 + 影响行数判断 + 有限重试。答完这四步，再补一句"高冲突场景不适合"，就是完整答案。
 
 ### Q41. 什么是线程池？为什么使用线程池？
 
@@ -702,7 +951,19 @@ Netty 主要基于 NIO 和 Reactor 模型。
 | HashMap 为什么用红黑树？ | 链表过长时，将查询从 O(n) 降到 O(logN) |
 | HashMap 为什么用 2 的幂？ | 位运算定位桶下标，效率高且分布更均匀 |
 | volatile 能保证 i++ 吗？ | 不能，i++ 是读、改、写复合操作 |
+| volatile 为什么能禁止重排序？ | JVM 插入内存屏障，x86 上编译成带 lock 前缀的指令 |
+| DCL 单例为什么要加 volatile？ | `new` 分为分配内存、初始化、赋值三步，防止赋值被重排到初始化之前 |
+| synchronized 底层靠什么实现？ | 字节码 monitorenter/monitorexit + 对象头 Mark Word + ObjectMonitor |
+| synchronized 锁升级过程？ | 无锁 → 偏向锁 → 轻量级锁 → 重量级锁，只能升级不能降级 |
+| 偏向锁为什么被废弃？ | 撤销需要 STW，现代应用命中率低，JDK 15 默认关闭、JDK 18 移除 |
+| 轻量级锁适合什么场景？ | 线程交替执行、竞争时间极短，靠 CAS 加自旋，不适合真正同时竞争 |
 | synchronized 和 Lock 怎么选？ | 简单互斥优先 synchronized，需要超时、公平、可中断时用 Lock |
+| AQS 的核心是什么？ | volatile int state + CLH 双向等待队列 + 模板方法 |
+| CAS 有什么问题？ | 自旋耗 CPU、只能保证单个变量、ABA、公平性差 |
+| ABA 怎么解决？ | AtomicStampedReference 加版本号，或 AtomicMarkableReference 加标记 |
+| AtomicLong 和 LongAdder 怎么选？ | 要精确读用 AtomicLong，高并发统计用 LongAdder |
+| 乐观锁和悲观锁怎么选？ | 冲突少、读多写少用乐观锁；冲突多、长事务用悲观锁 |
+| 数据库乐观锁怎么写？ | version 字段 + `where id = ? and version = ?`，判断影响行数并有限重试 |
 | 反射为什么慢？ | 运行时解析和检查较多，编译器优化空间小 |
 | JDK 动态代理的限制？ | 目标类需要实现接口；无接口时可考虑 CGLIB |
 | Stream 中间操作何时执行？ | 遇到终止操作时才执行 |
