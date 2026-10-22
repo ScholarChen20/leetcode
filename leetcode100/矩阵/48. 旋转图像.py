@@ -9,9 +9,6 @@
 from typing import List
 class Solution:
     def rotate(self, matrix: List[List[int]]) -> None:
-        """
-        Do not return anything, modify matrix in-place instead.
-        """
         n = len(matrix)
         for i in range(n):
             for j in range(i, n):
@@ -21,9 +18,19 @@ class Solution:
 
         return matrix
 
+    def rotate2(self, matrix: List[List[int]]) -> None:
+        # 创建一个新矩阵，用于存储旋转后的结果 时间复杂度O(n^2),空间复杂度O(n^2)
+        n = len(matrix)
+        new_matrix = [[0] * n for _ in range(n)]
+        for i in range(n):
+            for j in range(len(matrix[i])):
+                new_matrix[j][n-1-i] = matrix[i][j]  # 顺时针旋转90度
+        return new_matrix
+
 if __name__ == '__main__':
     matrix = [[1,2,3],[4,5,6],[7,8,9]]
-    print(Solution().rotate(matrix))
+    # print(Solution().rotate(matrix))
+    print(Solution().rotate2(matrix))
 
 
 """
