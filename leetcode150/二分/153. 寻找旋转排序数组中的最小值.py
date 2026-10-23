@@ -28,20 +28,22 @@ from typing import List
 
 class Solution:
     def findMin(self, nums: List[int]) -> int:
-        """
-        二分查找, 找到第一个小于nums[0]的元素
-        """
-        n = len(nums)
-        left = 0
-        right = n - 1
+        left, right = 0, len(nums) - 1
+
         while left < right:
             mid = (left + right) // 2
-            if nums[mid] < nums[0]:
-                right = mid
-            else:
+
+            if nums[mid] > nums[right]:
+                # mid 在较大的那一段，最小值一定在它右边
                 left = mid + 1
+            else:
+                # mid 可能就是最小值，因此不能排除 mid
+                right = mid
+
         return nums[left]
+
 
 if __name__ == '__main__':
     s = Solution()
     print(s.findMin([3,4,5,1,2]))
+    print(s.findMin([4,5,6,7,0,1,2]))
