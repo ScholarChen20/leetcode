@@ -13,7 +13,7 @@
 class Solution:
     def maxSubArray(self, nums: list[int]) -> int:
         """
-        动态规划
+        动态规划, dp[i]表示以i结尾的最大子数组和, dp[i] = max(dp[i - 1] + nums[i], nums[i])
         :param nums:
         :return:
         """
