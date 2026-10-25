@@ -104,3 +104,95 @@ LoRA冻结基座大模型权重，只在Transformer注意力层新增低秩矩�
 3. 团队模型训练的算力环境大概是什么样？
 
 ---
+
+
+
+## 一、动态边界感知混合损失函数 $\mathcal{L}_{\text{hybrid}}$
+
+### 1. 设计动机
+超声图像中病灶边界常因声学伪影而模糊、对比度低，带来两个核心挑战：
+- **边界难学**：常规像素级损失对整片区域一视同仁，边界像素的梯度被大面积内部区域淹没；
+- **优化目标冲突**：全局结构保持与局部边界精修难以同时优化。
+
+### 2. 整体结构
+$$\mathcal{L}_{\text{hybrid}} = \frac{\alpha+\beta}{2}\cdot \mathcal{L}_{\text{seg}} + \gamma(t)\cdot \mathcal{L}_{\text{boundary}}$$
+
+其中区域项：
+$$\mathcal{L}_{\text{seg}}= \alpha \cdot \mathcal{L}_{\text{BCE}} + \beta \cdot \mathcal{L}_{\text{Dice}}$$
+
+本文取 $\alpha=\beta=1$。BCE 保证像素级分类精度，Dice 保证前景区域的整体重叠度，二者互补。
+
+### 3. 边界项实现：距离变换边界掩码
+$$\mathcal{L}_{\text{boundary}}=\frac{1}{N}\sum_{i=1}^{N} W_{\text{boundary}}(i) \cdot\left(p_{i}-y_{i}\right)^{2} \cdot \mathcal{L}_{BCE}$$
+
+权重 $W_{\text{boundary}}(i)$ 由金标准 mask 的**欧氏距离变换（EDT）**构造：
+
+1. **归一化距离图**：
+   $$D(i)=\frac{EDT(Y)}{\max(EDT(Y))+\epsilon}$$
+   对 GT mask 计算每个像素到最近边界的距离并归一化到 $[0,1]$。越靠近边界 $D(i)\to 0$，越深入内部 $D(i)\to 1$。
+
+2. **取反 + clamp 生成边界掩码**：
+   $$W_{\text{boundary}}(i)=\operatorname{clamp}(1.0-D(i),\,0.1,\,1.0)$$
+   - 边界处 $D\approx 0 \Rightarrow W\approx 1$，权重最大，重点惩罚边界预测误差；
+   - 内部远处 $D\to 1 \Rightarrow W\to 0.1$，保留基础权重避免内部完全失监督；
+   - clamp 作为饱和函数，将边界影响限制在合理区间。
+
+> **核心思想**：用距离变换自动生成一张"边界热图"作为权重，离边界越近像素误差惩罚越重，将模型注意力物理性地推向模糊的病灶轮廓。
+
+### 4. 余弦调制权重：训练后期聚焦边界
+$$\gamma(t) = \gamma_{\min} + \frac{\gamma_{\max} - \gamma_{\min}}{2} \left( 1 - \cos\left( \frac{\pi t}{T} \right) \right)$$
+
+- 训练开始 $\gamma(0)=\gamma_{\min}=0.1$，结束 $\gamma(T)=\gamma_{\max}=0.5$；
+- **前期** $\gamma$ 小 → 边界项弱、区域项主导 → 模型先学习整体结构；
+- **后期** $\gamma$ 逐步放大至 0.5 → 边界项权重增强 → 优化重心平滑迁移到边界精修；
+- 采用余弦曲线实现平滑过渡，避免权重突变导致训练震荡。
+
+> 该设计模仿临床标注流程：医生先粗定位病灶，再细描边界。损失函数先用区域项学"在哪"，再用动态放大的边界项学"边在哪"。
+
+---
+
+## 二、多尺度特征融合模块 FIFM
+
+### 1. 设计动机
+超声图像需同时保留局部细节（病灶边缘、纹理）和全局语义（解剖上下文）。CNN 擅长局部细节与高频纹理，Mamba 擅长长程全局依赖。FIFM 采用"双分支 + 注意力引导"的层级融合，在 4 个尺度上逐级进行双向交互，过滤冗余背景噪声、抑制散斑干扰。
+
+### 2. 输入
+- Mamba 分支特征：$F_{m}=[f_{m_1}, f_{m_2}, f_{m_3}, f_{m_4}]$
+- CNN 分支特征：$F_{c}=[f_{c_1}, f_{c_2}, f_{c_3}, f_{c_4}]$
+
+### 3. 双向交叉调制
+
+**(a) CNN 特征由 Mamba 全局上下文增强**
+
+将 Mamba 分支特征做平均池化与展平，得到全局上下文 token，与 CNN 特征拼接形成长度 $(1+h\times w)$ 的 token 序列，再经 Transformer 块处理：
+
+$$f_{c_{i}}^{'}=\text{Reshape}(f_{c _{i}})+\mathcal{F}(\text{AvgPool}(F_{m_{i}}))$$
+$$f_{c_{i}}^{''}=\text{MSA}(\text{LN}({f_{c_{i}}}^{'}))+{f_{c_{i}}}^{'}$$
+$$f_{c}^{i}=\text{MLP}(\text{LN}(f_{c_{i}}^{''}))+f_{c_{i}}^{''}$$
+
+**(b) Mamba 特征由 CNN 局部细节增强**（公式对称，$m$ 与 $c$ 互换）：
+
+$$f_{m_{i}}^{'}=\text{Reshape}(f_{m_{i}})+\mathcal{F}(\text{AvgPool}(f_{c_{i}}))$$
+$$f_{m_{i}}^{''}=\text{MSA}(\text{LN}({f_{m_{i}}}^{'}))+{f_{m_{i}}}^{'}$$
+$$f_{m}^{i}=\text{MLP}(\text{LN}(f_{m_{i}}^{''}))+f_{m_{i}}^{''}$$
+
+> 双向设计使两分支互为补充：CNN 分支获得全局语义引导，Mamba 分支补回高分辨率局部细节；全局自注意力（MSA）在全序列上重新分配权重，压低冗余背景噪声、放大有效语义响应。
+
+### 4. 跨尺度融合与维度校正
+
+交互后两分支输出通过加性融合与多尺度卷积实现尺度间特征交互：
+
+$$\hat{f_{c}^{i}}=f_{c}^{i}+\text{Conv}_{5\times5}(f_{m}^{i})$$
+$$\hat{f_{m}^{i}}=f_{m}^{i}+\text{Conv}_{3\times3}(f_{c}^{i})$$
+$$f_{out}^{i} =\text{Conv}_{1\times1}(\text{Cat}(\hat{f_{c}^{i}}+\hat{f_{m}^{i}}))$$
+
+- **非对称卷积注入**：CNN 回注 Mamba 信息用 $5\times5$（更大感受野铺开全局语义），Mamba 回注 CNN 信息用 $3\times3$（聚焦局部细节）；
+- **维度校正**：$\text{Conv}_{1\times1}$ 将拼接结果压回统一通道数，输出该尺度融合特征 $f_{out}^i$。
+
+### 5. 一句话总结
+FIFM 在每个尺度上让 CNN 与 Mamba 互注入信息、用全局自注意力去噪增强，再用多尺度卷积做跨尺度交互、$1\times1$ 卷积校准维度——本质是以"双向注意力融合"在保留局部细节的同时强化全局语义，从特征层面抑制超声冗余背景与散斑噪声。
+
+
+
+---
+需要我把这两段也整理成面试问答对，和上一轮 Med-SAMUS 的格式保持一致吗？
