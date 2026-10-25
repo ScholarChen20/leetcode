@@ -1,4 +1,4 @@
-# Python 基础八股
+randn# Python 基础八股
 
 ## 一、Python 基础概念
 

@@ -24,6 +24,7 @@ class Solution:
                 path.append(nums[i])
                 facktrace(path, i + 1)
                 path.pop()
+
         facktrace([], 0)
         return res
 

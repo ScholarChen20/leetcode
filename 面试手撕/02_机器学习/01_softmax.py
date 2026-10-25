@@ -1,10 +1,7 @@
 """数值稳定的 Softmax 实现。"""
 
 from __future__ import annotations
-
 import numpy as np
-
-
 def softmax(logits: np.ndarray, axis: int = -1) -> np.ndarray:
     """沿指定维度计算数值稳定的 Softmax 概率。"""
     values = np.asarray(logits, dtype=np.float64)

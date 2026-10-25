@@ -22,7 +22,7 @@ class Solution:
         cnt = 0
 
         def dfs(i, j):
-            if i<0 or i>=row or j<0 or j>=col or grid[i][j] == '0':
+            if i<0 or i>=row or j<0 or j>=col or grid[i][j] == '0': # 退出条件
                 return
             grid[i][j] = '0'
             dfs(i+1, j)
