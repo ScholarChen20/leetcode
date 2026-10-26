@@ -13,4 +13,32 @@
 输入：grid = [[0,0,0,0,0,0,0,0]]
 输出：0
 """
-# todo
+class Solution:
+    def maxAreaOfIsland(self, grid: list[list[int]]) -> int:
+        row, col = len(grid), len(grid[0])
+        ans = 0
+        def dfs(i, j):
+            if i < 0 or i >= row or j < 0 or j >= col or grid[i][j] == 0:
+                return 0
+            grid[i][j] = 0 # 标记以访问
+            ans = 1
+            for x,y in [(-1, 0), (0, -1), (0, 1), (1, 0)]:
+                dx, dy = i + x, j + y
+                ans += dfs(dx, dy)
+            return ans
+
+        for i in range(row):
+            for j in range(col):
+                if grid[i][j] == 1:
+                    land = dfs(i, j)
+                    ans = max(ans, land)
+
+        return ans
+
+if __name__ == '__main__':
+    s = Solution()
+    grid = [[1, 0, 0],[0, 1, 1],[0, 1, 1]]
+    grid1 = [[0,0,0,0,0,0]]
+    print(s.maxAreaOfIsland(grid))
+
+

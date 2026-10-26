@@ -9,19 +9,15 @@
 """
 class Solution:
     def canJump(self, nums: list[int]) -> bool:
-        """
-        
-        :param nums:
-        :return:
-        """
+        # max_reach表示最远可达，遍历数组，当出现i值大于max_reach表示不可到达数组末尾，每步更新max_reach
         max_reach = 0
-        for i, jump in enumerate(nums):
-          if i > max_reach:
-              return False
-          max_reach=max(max_reach, i + jump)
+        for i, num in enumerate(nums):
+            if i > max_reach:
+                return False
+            max_reach = max(max_reach, i + num)
         return True
 
 if __name__ == '__main__':
     s=Solution()
-    # print(s.canJump([2,3,1,1,4]))
+    print(s.canJump([2,3,1,1,4]))
     print(s.canJump([3,2,1,0,4]))

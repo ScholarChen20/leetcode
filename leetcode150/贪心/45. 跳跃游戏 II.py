@@ -19,13 +19,11 @@ i + j < n
 class Solution:
     def jump(self, nums: list[int]) -> int:
         """
-        贪心算法
-        :param nums:
-        :return:
+        贪心算法:
         """
-        jumps = 0
-        current_head = 0
-        next_head = 0
+        jumps = 0 # 跳跃次数
+        current_head = 0 # 当前位置
+        next_head = 0 # 最远跳越位置
         for i in range(len(nums) - 1):
             next_head = max(next_head, i + nums[i])
             if i > current_head:

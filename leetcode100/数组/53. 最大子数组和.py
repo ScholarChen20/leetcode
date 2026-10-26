@@ -12,11 +12,7 @@
 
 class Solution:
     def maxSubArray(self, nums: list[int]) -> int:
-        """
-        动态规划, dp[i]表示以i结尾的最大子数组和, dp[i] = max(dp[i - 1] + nums[i], nums[i])
-        :param nums:
-        :return:
-        """
+        """动态规划, dp[i]表示以i结尾的最大子数组和, dp[i] = max(dp[i - 1] + nums[i], nums[i])"""
         n = len(nums)
         dp = [0] * n
         dp[0] = nums[0]
@@ -25,11 +21,7 @@ class Solution:
         return max(dp)
 
     def maxSubArray2(self, nums: list[int]) -> int:
-        """
-        贪心算法, 当前元素和前一个元素的和比较大，则当前元素和前一个元素的和，否则当前元素和前一个元素的和为0
-        :param nums:
-        :return:
-        """
+        """贪心算法, 当前元素和前一个元素的和比较大，则当前元素和前一个元素的和，否则当前元素和前一个元素的和为0"""
         max_sum = nums[0]
         current_sum = nums[0]
         for i in range(1, len(nums)):

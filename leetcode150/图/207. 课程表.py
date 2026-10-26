@@ -25,9 +25,10 @@ class Solution:
         def dfs(course, visited):
             if visited[course] == 1: # 已访问过，直接返回 True
                 return True
-            if visited[course] == -1:
+            if visited[course] == -1: # 访问中直接返回False
                 return False
-            visited[course] = -1 # 标记为访问中
+
+            visited[course] = -1
             for pre in graph[course]: # 递归遍历它的全部先修课；只要任一先修课路径上有环就立刻返回 False。
                 if not dfs(pre, visited):
                     return False
