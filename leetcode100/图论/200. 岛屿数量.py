@@ -22,7 +22,7 @@ class Solution:
         cnt = 0
 
         def dfs(i, j):
-            if i<0 or i>=row or j<0 or j>=col or grid[i][j] == '0': # 退出条件
+            if i<0 or i>=row or j<0 or j>=col or grid[i][j] == '0': # 退出条件（遇到水）
                 return
             grid[i][j] = '0'
             dfs(i+1, j)
@@ -65,5 +65,5 @@ if __name__ == '__main__':
   ['1','1','0','0','0'],
   ['0','0','0','0','0']
 ]
-    # print(solution.numIslands(grid))
-    print(solution.numIslands2(grid))
+    print(solution.numIslands(grid))
+    # print(solution.numIslands2(grid))
