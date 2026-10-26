@@ -22,8 +22,7 @@
 from typing import List
 class Solution:
     def reconstructQueue(self, people: List[List[int]]) -> List[List[int]]: # 方法二：从高到低考虑
-        people.sort(key=lambda x: (-x[0], x[1]))
-        n = len(people)
+        people.sort(key=lambda x: (-x[0], x[1])) # 先按照身高降序排列，再按照k值升序排列
         ans = list()
         for person in people:
             ans[person[1]:person[1]] = [person]
@@ -31,11 +30,11 @@ class Solution:
 
 class Solution1:
     def reconstructQueue(self, people: List[List[int]]) -> List[List[int]]: # 方法一：从低到高考虑
-        people.sort(key=lambda x: (x[0], -x[1]))
+        people.sort(key=lambda x: (x[0], -x[1]))  # 先按照身高升序排列，再按照k值降序排列
         n = len(people)
         ans = [[] for _ in range(n)]
         for person in people:
-            spaces = person[1] + 1
+            spaces = person[1] + 1 # 空位数，注意这里是k+1，因为k值是从0开始的
             for i in range(n):
                 if not ans[i]:
                     spaces -= 1

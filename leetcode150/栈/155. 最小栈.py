@@ -7,13 +7,10 @@ void pop() 删除堆栈顶部的元素。
 int top() 获取堆栈顶部的元素。
 int getMin() 获取堆栈中的最小元素。
 
-
 示例 1:
-
 输入：
 ["MinStack","push","push","push","getMin","pop","top","getMin"]
 [[],[-2],[0],[-3],[],[],[],[]]
-
 输出：
 [null,null,null,null,-3,null,0,-2]
 

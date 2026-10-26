@@ -9,7 +9,7 @@ from typing import List
 class Solution:
     def trap(self, height: List[int]) -> int:
         """
-        注意到下标 i 处能接的雨水量由 leftMax[i] 和 rightMax[i] 中的最小值决定。由于数组 leftMax 是从左往右计算，数组 rightMax 是从右往左计算，因此可以使用双指针和两个变量代替两个数组。
+        双指针：注意到下标 i 处能接的雨水量由 leftMax[i] 和 rightMax[i] 中的最小值决定。由于数组 leftMax 是从左往右计算，数组 rightMax 是从右往左计算，因此可以使用双指针和两个变量代替两个数组。
         """
         if not height:
             return 0
@@ -33,9 +33,7 @@ class Solution:
         return ans
 
     def trap1(self, height: List[int]) -> int:
-        """
-        动态规划解法：先计算每个位置的左右最大值，然后计算每个位置的接雨水量。时间复杂度O(n)，空间复杂度O(n)
-        """
+        """动态规划解法：先计算每个位置的左右最大值，然后计算每个位置的接雨水量。时间复杂度O(n)，空间复杂度O(n)"""
         n = len(height)
         left_max = [0] * n
         right_max = [0] * n
@@ -53,8 +51,7 @@ class Solution:
         return ans
 
     def trap2(self, height: List[int]) -> int:
-        """单调栈解法： 维护一个单调递减栈，栈中存储的是下标，栈中元素对应的 height 递减，当遍历到的元素大于栈顶元素时，说明当前元素可以接雨水，接雨水量为当前元素和栈顶元素的差值乘以栈顶元素的宽度
-        """
+        """单调栈解法： 维护一个单调递减栈，栈中存储的是下标，栈中元素对应的 height 递减，当遍历到的元素大于栈顶元素时，说明当前元素可以接雨水，接雨水量为当前元素和栈顶元素的差值乘以栈顶元素的宽度"""
         n = len(height)
         stack = []
         ans = 0

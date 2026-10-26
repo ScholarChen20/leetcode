@@ -10,17 +10,17 @@ from typing import List
 class Solution:
     def removeDuplicates(self, nums: List[int]) -> int:
         # 快慢指针 slow 指向的是当前需要被覆盖的元素
-        slow=fast=2
-        n=len(nums)
+        slow = fast = 2
+        n = len(nums)
         if n <= 2:
             return 2
 
         # 使用快慢指针遍历数组， 如果当前元素和slow-2位置的元素不相等，则将fast位置的元素赋值给slow位置的元素，slow+1，fast+1
-        while fast<n:
-            if nums[slow-2]!=nums[fast]:
-                nums[slow]=nums[fast]
-                slow+=1
-            fast+=1
+        while fast < n:
+            if nums[slow - 2] != nums[fast]:
+                nums[slow] = nums[fast]
+                slow += 1
+            fast += 1
         return slow
     
 if __name__ == '__main__':
