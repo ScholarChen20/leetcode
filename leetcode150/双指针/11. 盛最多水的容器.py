@@ -11,25 +11,19 @@
 
 class Solution:
     def maxArea(self, height: list[int]) -> int:
-        """
-        双指针法：左右指针分别指向数组的左右两端，计算当前面积，然后移动较短的指针，直到左右指针相遇，返回最大面积
-        """
-        left = 0
-        right = len(height) - 1
-        max_area = 0
-
+        # 双指针法：左右指针分别指向数组的左右两端，计算当前面积，然后移动较短的指针，直到左右指针相遇，返回最大面积
+        left, right = 0, len(height) - 1
+        ans = 0
         while left < right:
-            # 计算当前面积
-            current_area = min(height[left], height[right]) * (right - left)
-            max_area = max(max_area, current_area)
+            area = min(height[left], height[right]) * (right - left)
+            ans = max(ans, area)
 
-            # 移动较短的指针
             if height[left] < height[right]:
                 left += 1
             else:
                 right -= 1
 
-        return max_area
+        return ans
 
 if __name__ == '__main__':
     s = Solution()

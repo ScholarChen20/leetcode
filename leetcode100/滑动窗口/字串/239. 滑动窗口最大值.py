@@ -19,7 +19,7 @@ class Solution:
         queue = collections.deque()
         res = []
         n = len(nums)
-        for i,j in zip(range(1-k,n-k+1), range(n)):
+        for i,j in zip(range(1 - k,n - k + 1), range(n)):
             # 删除 deque 中对应的 nums[i-1]
             if i>0 and queue[0] == nums[i-1]:
                 queue.popleft()

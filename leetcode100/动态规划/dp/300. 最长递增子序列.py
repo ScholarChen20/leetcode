@@ -12,6 +12,7 @@
 输入：nums = [7,7,7,7,7,7,7]
 输出：1
 """
+from bisect import bisect_left
 from typing import List
 class Solution:
     def lengthOfLIS(self, nums: List[int]) -> int:
@@ -45,22 +46,42 @@ class Solution:
 
     """动态规划＋2分查询 定义 tails, res = 0 tails[i]表示长度为i的最长子序列的最小末尾元素"""
     def lengthOfLIS_2(self, nums: List[int]) -> int:
-        tails = [0] * len(nums)
+        dp = [0] * len(nums)
         res = 0
         for num in nums:
             left = 0
             right = res
             while left < right:
                 mid = (left + right) // 2
-                if tails[mid] < num:
+                if dp[mid] < num:
                     left = mid + 1
                 else:
                     right = mid
-            tails[left] = num
-            if left == res: # 如果left==res,说明num大于所有tails中的元素，res+1
+            dp[left] = num
+            if left == res: # 如果left==res,说明num大于所有dp中的元素，res+1
                 res += 1
         return res
 
+
+class Solution2:
+    def lengthOfLIS(self, nums: List[int]) -> int:
+        g = []
+        for x in nums:
+            j = bisect_left(g, x)
+            if j == len(g):  # >=x 的 g[j] 不存在
+                g.append(x)
+            else:
+                g[j] = x
+        return len(g)
+
+    def lengthOfLIS2(self, nums: List[int]) -> int:
+        ng = 0  # g 的长度
+        for x in nums:
+            j = bisect_left(nums, x, 0, ng) # 从nums[0]到nums[ng-1]中找到第一个大于等于x的数的索引
+            nums[j] = x
+            if j == ng:  # >=x 的 g[j] 不存在
+                ng += 1
+        return ng
 
 if __name__ == '__main__':
     # print(Solution().lengthOfLIS([0,1,0,3,2,3]))

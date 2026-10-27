@@ -1,5 +1,4 @@
 """
-45. 跳跃游戏 II
 给定一个长度为 n 的 0 索引整数数组 nums。初始位置在下标 0。
 
 每个元素 nums[i] 表示从索引 i 向后跳转的最大长度。换句话说，如果你在索引 i 处，你可以跳转到任意 (i + j) 处：
@@ -18,9 +17,6 @@ i + j < n
 """
 class Solution:
     def jump(self, nums: list[int]) -> int:
-        """
-        贪心算法:
-        """
         jumps = 0 # 跳跃次数
         current_head = 0 # 当前位置
         next_head = 0 # 最远跳越位置

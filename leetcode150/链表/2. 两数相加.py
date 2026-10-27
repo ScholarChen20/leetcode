@@ -13,33 +13,41 @@ class ListNode:
     def __init__(self, x):
         self.val = x
         self.next = None
-from typing import List
+from typing import List, Optional
 class Solution:
-    def addTwoNumbers(self, l1: ListNode, l2: ListNode) -> ListNode:
-        """
-        模拟法，从头到尾遍历两个链表，每次相加，如果大于10，则进位，否则不进位
-        """
-        if not l1:
-            return l2
-        if not l2:
-            return l1
-        dummy = ListNode(0) # 创建一个虚拟头节点，用于返回结果链表
-        cur = dummy # 创建一个指针，用于遍历结果链表
-        carry = 0
-        while l1 or l2:
+    def addTwoNumbers(self, l1: Optional[ListNode], l2: Optional[ListNode]) -> Optional[ListNode]: # 迭代法
+        cur = dummy = ListNode()  # 哨兵节点
+        carry = 0  # 进位值
+        while l1 or l2 or carry:  # 有一个不是空节点，或者还有进位，就继续迭代
+            s = carry
             if l1:
-                carry += l1.val
-                l1 = l1.next
+                s += l1.val  # 节点值和进位加在一起
+                l1 = l1.next  # 下一个节点
             if l2:
-                carry += l2.val
-                l2 = l2.next
-            cur.next = ListNode(carry % 10) # 创建一个节点，用于存储相加的结果
-            cur = cur.next
-            carry //= 10
+                s += l2.val  # 节点值和进位加在一起
+                l2 = l2.next  # 下一个节点
+            cur.next = ListNode(s % 10)  # 每个节点保存一个数位
+            carry = s // 10  # 新的进位
+            cur = cur.next  # 下一个节点
+        return dummy.next  # 哨兵节点的下一个节点就是头节点
 
-        if carry:
-            cur.next = ListNode(carry) # 如果最后还有进位，需要创建一个节点，用于存储进位
-        return dummy.next
+class Solution2:
+    # l1 和 l2 为当前遍历的节点，carry 为进位.创建新节点
+    def addTwoNumbers(self, l1: Optional[ListNode], l2: Optional[ListNode], carry=0) -> Optional[ListNode]:
+        if l1 is None and l2 is None and carry == 0:  # 递归边界
+            return None
+
+        s = carry
+        if l1:
+            s += l1.val  # 累加进位与节点值
+            l1 = l1.next
+        if l2:
+            s += l2.val
+            l2 = l2.next
+
+        # s 除以 10 的余数为当前节点值，商为进位
+        return ListNode(s % 10, self.addTwoNumbers(l1, l2, s // 10))
+
 
 if __name__ == '__main__':
     l1 = ListNode(2)

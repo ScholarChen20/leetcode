@@ -16,7 +16,7 @@ def dailyTemperatures(temperatures: List[int]) -> List[int]:
     ans = [0] * len(temperatures)
     for i,t in enumerate(temperatures):
         while stack and t > temperatures[stack[-1]]:
-            ans[stack[-1]] = i - stack[-1]
+            ans[stack[-1]] = i - stack[-1] # 当前天数减去上一次出现的天数
             stack.pop()
         stack.append(i)
 

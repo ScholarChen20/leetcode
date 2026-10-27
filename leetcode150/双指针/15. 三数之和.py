@@ -24,26 +24,23 @@ class Solution:
         nums.sort()
 
         for k in range(n - 2):
-            if nums[k] > 0:
-                break
-            if k >= 0 and nums[k] == nums[k-1]:  # 去重
-                continue
-            i, j = k+1, n-1
+            i, j = k + 1, n - 1
             while i < j:
-                sum = nums[i] + nums[j] + nums[k]
-                if sum < 0:
-                    i += 1
-                elif sum > 0:
-                    j -= 1
-                else:
+                total = nums[i] + nums[j] + nums[k]
+                if total == 0:
                     res.append([nums[k], nums[i], nums[j]])
-                    while i < j and nums[i] == nums[i+1]:
+                    while nums[i] == nums[i + 1] and i < j:
                         i += 1
-                    while i < j and nums[j] == nums[j-1]:
+                    while nums[j] == nums[j-1] and j > i:
                         j -= 1
                     i += 1
                     j -= 1
+                elif total < 0:
+                    i += 1
+                else:
+                    j -= 1
         return res
+
 
 if __name__ == '__main__':
     s = Solution()
