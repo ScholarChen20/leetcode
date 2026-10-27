@@ -1,361 +1,431 @@
-# OmniRad 面试讲解笔记
+# OmniRad 面试复盘手册（代码事实版）
 
-## 项目定位
-
-**一句话介绍：**OmniRad 在 MiniGPT-Med 的视觉语言主干上，增加由特殊 token 驱动的结构化预测头，使同一个模型能根据任务指令输出报告、VQA 答案、检测框、定位框和分割掩码。项目默认训练配置使用 **LLaMA-2-7B + LoRA**；仓库另有 LLaMA-3 配置，介绍具体实验时应说明采用了哪一个配置。
-
-它要解决的是医学视觉语言模型擅长生成文字，却难以直接给出病灶位置和像素边界的问题。核心思路可记成：**一个语言主干、两条视觉路径、五个特殊输出 token、按 token 路由到结构化预测头。**
-
-## 面试时的 90 秒表述
-
-> 这个项目希望用一个医学多模态模型处理报告生成、问答以及病灶的检测、定位和分割。我们以 MiniGPT-Med 为基础：EVA-ViT 提取语义特征，投影到 LLaMA 的输入空间；另用 MedSAM 提取稠密空间特征供分割解码器使用。
->
-> 输入侧用 `[report]`、`[vqa]`、`[detection]`、`[segmentation]` 等任务标签指定任务。输出侧扩展了 `<SEG>`、`<BOX_S/M/L>`、`<LOC>` 五个 token。语言模型生成普通文字时直接输出文本；生成特殊 token 时，我们取该位置的隐藏状态交给相应的掩码或框预测头。因此语言模型既决定任务输出形式，也决定病灶实例的数量。
->
-> 重点设计有三个：一是重复输出 `<SEG>`，使一张图可以产生零个、一个或多个掩码，并加入像素级不确定性分支；二是按病灶相对面积划分小、中、大三个检测尺度，分别回归并提高小目标的损失权重；三是设计掩码与检测框的几何一致性损失，约束不同输出指向同一位置。目前前两项的主要代码路径已经写出，一致性训练和解剖先验仍需补齐与验证。效果要以实际实验指标和消融结果为准。
-
-## 总体结构与代码入口
-
-```text
-医学图像 + 任务指令
-    ├── EVA-ViT-G → 4-patch 合并 → 线性投影 → LLaMA + LoRA
-    │                                        ├── 普通词 → 报告 / VQA / 识别
-    │                                        ├── <BOX_S/M/L> → 三个检测框头
-    │                                        ├── <LOC> → 定位框头
-    │                                        └── <SEG> → 分割提示向量
-    └── MedSAM 图像编码器 → 稠密特征 ───────────────┘
-                                               ↓
-                                        SAM mask decoder → 掩码
-```
-
-- EVA-ViT 的特征进入 LLaMA：`minigpt4/models/minigpt_v2.py` 的 `encode_img()`。
-- MedSAM 编码器、mask decoder、框头和定位头：`minigpt4/models/omnirad.py`。
-- 任务提示、答案 token 和结构化标注：`minigpt4/datasets/datasets/unified_us_dataset.py` 与 `kvasir_dataset.py`。
-- 默认配置：`train_configs/omnirad_finetune.yaml`。
-
-## 创新点 1：特殊 token 路由，把文字与几何输出接在一个主干上
-
-**动机：**报告与 VQA 是文字，检测与定位是坐标，分割是掩码。单靠语言模型输出坐标字符串，难以直接优化连续的几何结果。
-
-**代码路径：**
-
-1. `OmniRad._expand_output_vocabulary()` 将 `<SEG>`、`<BOX_S>`、`<BOX_M>`、`<BOX_L>`、`<LOC>` 加入 tokenizer，扩展 LLaMA 的输入 embedding 和输出层，并保存 token ID。配置在 `train_configs/omnirad_finetune.yaml` 的 `expand_vocab`。
-2. 训练时，`OmniRad.forward()`以 `output_hidden_states=True` 跑 LLaMA。普通答案和特殊 token 都接受语言模型交叉熵监督。
-3. `_extract_special_token_hidden_states()`扫描目标答案里的特殊 token，记录 `(batch_idx, hidden_state)`；保留样本索引和出现顺序，避免多病灶样本在 batch 中配错标注。
-4. `compute_auxiliary_losses()`按 token 类型调用检测、定位和分割损失。
-5. 推理时 `generate()`先自回归生成答案；`_run_second_pass()`把生成 token 与提示重新送入 LLaMA，取得各特殊 token 的隐藏状态；`_decode_dense_outputs_from_generation()`再调用对应预测头。**当前是生成后共用一次二次前向，不是逐 token 实时解码。**
-
-**面试说法：**“这里的路由由任务标签、生成的特殊 token 以及对应的预测头共同实现；代码里没有单独的可学习门控网络。”
-
-## 创新点 2：AMU-Seg，可变数量分割与不确定性
-
-### 2.1 可变数量的 `<SEG>` 查询
-
-超声数据转换器用连通域把合并掩码拆成实例掩码，再从实例掩码生成框，标注 `K = len(boxes)`，见 `tools/dataset_utils.py` 的 `split_instances()`、`masks_to_boxes()`和 `tools/converters/group_us.py`。数据集抽到分割任务时，答案会写成 `2 lesions should be segmented. <SEG> <SEG>`；`K=0` 时答案不含 `<SEG>`，见 `UnifiedUSDataset._segmentation_answer()`。
-
-模型对每个 `<SEG>` 位置的隐藏状态独立处理：`seg_projector` 将 LLaMA 隐藏状态投影到 256 维，作为 SAM 的 sparse prompt；MedSAM 图像编码器提供 dense image embedding；SAM mask decoder 设置 `multimask_output=False`，所以一次 `<SEG>` 对应一张掩码。相关实现位于 `SamDenseEncoder`、`SamMaskDecoder` 和 `_compute_seg_loss()`。
-
-训练时，预测掩码与同一样本的实例 GT 按出现顺序配对，计算 BCE + Dice。推理时每遇到一个 `<SEG>` 就解码一张掩码，并返回 `seg_count` 与 `masks` 列表。
-
-**注意：**`_compute_seg_loss()`里还有 `|生成的 <SEG> 数量 - K|` 形式的 cardinality 项，但数量经 `.item()` 变为普通数值，它本身不能把梯度传回 token 数量决策。数量学习主要依赖目标答案中 `<SEG>` 的语言模型交叉熵。当前超声与 Kvasir 转换器还会跳过一部分无病灶样本，所以不能仅凭代码声称已验证 `K=0` 的拒检效果。Kvasir 多框样本也可能只有一张掩码路径，多实例分割监督尚需核实。
-
-### 2.2 像素级不确定性
-
-`SamMaskDecoder` 在掩码 logits 后增加两层卷积的 `uncertainty_head`，输出逐像素的 `log_variance`。`_compute_seg_loss()`把它截断到 `[-4, 4]`，换算方差，再将加权 BCE 与方差正则项以 `0.1` 的系数加入分割损失。
-
-**面试说法：**“我们接入了像素级不确定性分支，训练目标允许模糊边界获得不同权重。”当前推理输出只返回掩码，没有向外返回不确定性图，也没有阈值拒判或撤回 `<SEG>` 的闭环，因此“自动拒判”属于设计目标。
-
-## 创新点 3：SAR-Loc，尺度感知检测与解剖定位
-
-### 3.1 S/M/L 三尺度检测
-
-`tools/dataset_utils.py` 的 `bbox_scale()`按框面积占图像面积的比例分桶：小于 1% 为 S，1% 到不足 10% 为 M，至少 10% 为 L。数据集据此在检测答案中放入 `<BOX_S/M/L>`，例如 `lesion 1 <BOX_S>; lesion 2 <BOX_L>`。
-
-`OmniRad` 建立三个独立的 `BoxRegressionHead`。每个头以隐藏状态为输入，经 `Linear → GELU → 4 维框输出`。`_compute_det_loss()`按 **样本索引 + 尺度桶**配对 token 与 GT，框输出经 sigmoid 归一化后算 L1。默认尺度权重为 S=3.0、M=1.5、L=1.0。推理时按 token 类型选头，将 `[0,1]` 坐标乘 `img_size` 得到像素框。
-
-**注意：**代码预留了 `class_head`，推理可读出 `class_id`，但当前检测损失没有类别 CE；设计文档中的 GIoU 也未进入当前 `_compute_det_loss()`。因此讲“尺度加权框回归”准确，讲“完成框类别联合训练或 GIoU 优化”不准确。
-
-### 3.2 `<LOC>` 与解剖区域
-
-超声数据转换器从报告提取 `anatomy_region`，数据集的 referring 答案会包含自然语言区域描述和 `<LOC>`。`LocalizationHead` 共享一层 MLP，分出 4 维像素框分支和解剖区域 logits 分支。
-
-目前 `_compute_loc_loss()`只对框计算 L1；解剖类别监督处还是 `pass`。推理也只解出框，未返回解剖分类结果。解剖图谱一致性与“报告 ↔ 区域”双向绑定写在设计文档中，尚未形成完整代码路径。
-
-**面试说法：**“定位头已预留像素坐标与解剖类别双输出，当前真正训练的是像素框；解剖分支和双向绑定是后续完善方向。”
-
-## 创新点 4：掩码与框的跨任务一致性
-
-`_compute_cons_loss()`要求同一样本的目标答案同时包含 `<SEG>` 和 `<BOX_*>`。它用 `<SEG>` 解码预测掩码，估计掩码外接框，与检测头预测的框做 L1，目标是让两个结构化输出指向相近区域。
-
-当前实现有三个限制，面试应主动说明：
-
-1. 超声与 Kvasir 的 `__getitem__()`通常一次随机抽**一个任务**，答案只含一种结构化 token，因而这项损失在正常采样下可能经常为零。
-2. 一致性函数对所有尺度的框都调用 `box_m` 头，没有按 `<BOX_S/M/L>` 保留原尺度。
-3. 掩码边界提取包含阈值比较与 `argmax`，不能称为完整可微的 soft 外接框。报告与检测、grounding 与分割的另外两项一致性损失尚未实现。
-
-**面试说法：**“我们写出了 mask–box 几何一致性损失的代码雏形；当前还需改造联合任务样本、尺度头匹配和边界提取方式，再通过消融验证其收益。”
-
-## 训练目标、推理输出与验证
-
-训练总损失由文本 CE、检测 L1、定位 L1、分割 BCE/Dice/不确定性项，以及条件触发的 mask–box 一致性项组成，见 `OmniRad.forward()`。训练答案里的特殊 token 同时受到文本 CE 监督，其隐藏状态还接受对应几何监督。
-
-推理的实际执行顺序是：**EVA 图像编码 → LLaMA 生成文本及特殊 token → 二次 LLaMA 前向取隐藏状态 → 检测/定位/分割头解码**。输出可包含清理后的文本、保留特殊 token 的 `raw_text`、`seg_count`、`masks` 和 `boxes`。框坐标还会插回 `raw_text`，兼容现有评估脚本的正则解析。
-
-评估思路：报告看 BERT-Sim、BLEU-4、ROUGE-L、临床标签 F1；VQA 看答案匹配；检测和定位看 IoU；分割看 Dice/Mask IoU。仓库 README 的 OmniRad 对比表仍为 `TBD`，面试中只引用自己实际跑出的结果，不声称已有确定增益。
-
-## 面试官追问“代码能否直接跑通”时的回答
-
-这套架构的主链路已经写出，但几何监督仍有需要修正的工程点：
-
-- `blip2_image_train` 对图像做 `RandomResizedCrop`，框和掩码没有同步执行同一几何变换；原始框又直接除以 `img_size`，会造成图像与标注坐标不一致。
-- 数据集图像已按 EVA 路径归一化，MedSAM 编码器又使用自己的均值与方差；其输入需要从原始 RGB 单独预处理，不能只靠 `img.max() <= 1` 判断范围。
-- 配置中有 `loss_weights.seg`，但总损失目前直接加 `aux_losses['seg']`，没有乘这个总权重。
-- 配置中写有 `curriculum_epochs: 8`；runner 读取的是模型属性，而当前 OmniRad 模型没有设置该属性或实现 `set_curriculum_phase()`，不能把它描述成已生效的完整课程训练。
-
-这类问题的面试回答可以收束为：“我把模型设计、实际代码路径和已验证效果分开讲。下一步优先修正图像与标注的几何对齐，再补齐解剖监督与联合任务采样，最后做消融实验。”
-
-## 与 MiniGPT-Med / LISA 的关系
-
-| 维度 | MiniGPT-Med | LISA | OmniRad 当前代码 |
-| --- | --- | --- | --- |
-| 主要任务 | 医学报告、VQA 等文本任务 | 语言驱动分割 | 文本任务 + 框/掩码的结构化预测路径 |
-| 视觉路径 | EVA-ViT 语义特征 | 视觉语言特征 + SAM 空间特征 | EVA-ViT + MedSAM |
-| 结构化 token | 有文本坐标输出 | `<SEG>` | `<SEG>`、`<BOX_S/M/L>`、`<LOC>` |
-| 多实例分割 | 不支持 | 主要是单查询分割 | 可重复 `<SEG>`，每次解码一张掩码 |
-| 检测尺度 | 未采用本项目三档方案 | 不涉及 | S/M/L 三个框头与加权 L1 |
-| 不确定性 | 未采用本项目分支 | 未采用本项目分支 | 已有像素级分支及训练项，尚无推理拒判 |
-| 跨任务一致性 | 未采用本项目方案 | 未采用本项目方案 | mask–box 损失雏形，尚需联合样本验证 |
-
-## 一句话总结
-
-**我们把 MiniGPT-Med 的语言生成主干扩展为结构化输出控制器：任务标签决定问题类型，特殊 token 决定输出头和实例数量；MedSAM 提供像素级分割，尺度分桶提高检测对小目标的关注。当前应把完整一致性与临床拒判表述为后续待验证的设计。**
-
-## 一、基础差异：Llama 3 与 Qwen 3
-
-| 维度 | Llama 3 系列 | Qwen 3 系列 |
-| --- | --- | --- |
-| 出品方 | Meta | 阿里通义千问 |
-| 发布时间 | 2024.4（3 / 3.1 / 3.2 / 3.3） | 2025.4 |
-| 架构 | 纯 Dense（decoder-only） | Dense + MoE 双系列 |
-| 规模 | 8B / 70B / 405B | 0.6B~32B（Dense）+ 30B-A3B / 235B-A22B（MoE） |
-| 中文能力 | 较弱 | 显著更强（原生优化） |
-| 语言支持 | 以英文为主 | 119+ 语言 |
-| 特殊机制 | — | 混合推理（thinking / non-thinking 快慢思考） |
-| 开源许可 | Llama Community License（有商业限制，非 OSI） | Apache 2.0（完全宽松） |
-
-## 二、面试问答
-
-### 1. 多任务路由机制的实现逻辑是什么？
-
-> 输入 prompt 用 `[report]`、`[vqa]`、`[segmentation]` 等标签指定任务；输出时 LLaMA 通过语言模型头决定是否生成 `<SEG>`、`<BOX_S/M/L>` 或 `<LOC>`。训练阶段扫描目标答案中这些 token 的隐藏状态，送给相应的 mask、box 或 loc 头计算辅助损失；推理阶段生成结束后再做一次 LLaMA 前向，恢复特殊 token 隐藏状态并解码结构化结果。**它是 token 条件路由，没有独立门控网络。**
-
-### 2. 自适应多查询分割为什么能处理多个病灶？
-
-> 数据集按实例数 `K` 在答案里放 `K` 个 `<SEG>`。虽然词表里只有一个 `<SEG>`，但每次出现的位置不同，隐藏状态也不同；每个隐藏状态经 `seg_projector` 作为一次 SAM 提示，解码一张掩码。推理时由语言模型决定实际生成几次 `<SEG>`。其可变数量能力是结构设计，`K=0` 与多实例效果仍需针对性实验验证。
-
-### 3. 尺度感知检测如何实现？
-
-> 数据转换时按目标框面积比例分 S/M/L；检测答案中出现对应的 `<BOX_S/M/L>`；模型为三个 token 配三个框回归头，并在损失中给小目标更高的权重。这样数据标注、token 选择、预测头和损失函数处在一条完整路径上。
-
-### 4. 解剖先验和一致性约束做到哪一步？
-
-> `<LOC>` 的定位头已经有像素框和解剖分类两个分支，但当前只训练像素框。mask–box 一致性损失已有函数，正常训练样本却通常一次只抽一个任务，所以还不能声称它稳定产生了协同收益。解剖 CE、图谱对齐以及其余跨任务一致性是后续工作。
-
-### 5. 指标怎样选？
-
-> 报告生成可用 BERT-Sim 看语义相似度，BLEU-4 看短语重合，ROUGE-L 看序列覆盖，临床标签 F1 看疾病结论是否一致；VQA 看答案匹配；框定位用 IoU，分割用 Dice 和 Mask IoU。指标解释要结合各任务输出，最终只报告实际运行得到的数值。
+> 本文所有结论都来自仓库源码，标注了文件与行号，可直接在面试中"指哪打哪"。
+> 核心文件：`minigpt4/models/omnirad.py`(1700 行)、`minigpt4/models/minigpt_v2.py`、`minigpt4/models/minigpt_base.py`、`minigpt4/datasets/datasets/unified_us_dataset.py`、`tools/dataset_utils.py`、`eval_scripts/model_evaluation.py`。
 
 ---
 
-# 三、OmniRad 全流程八股：数据来源 → 预处理 → 训练 → 推理 → 评估
+## 0. 30 秒版本（开场自述骨架）
 
-> **阅读口径：**以下以仓库当前的 `train_configs/omnirad_finetune.yaml` 和 `eval_configs/omnirad_evaluation.yaml` 为主，区分“代码执行路径”“设计目标”“尚未验证的效果”。项目名虽写 Radiology，实际数据还包含超声和内镜；不要把 Kvasir 说成放射影像。数据量是 2026-10-21 工作区现存 JSON 的记录数，重新转换数据后可能变化。
+> OmniRad 是一个**以 LLaMA-3-8B 为唯一推理中枢**的统一医学多模态框架。它不改 LLM 的生成范式和输出空间，而是**把"结构化预测"降维成"生成一个特殊 token"**：模型在自回归过程中吐出 `<SEG>` / `<BOX_S/M/L>` / `<LOC>`，训练时取这些 token 位置的最后一层隐状态，分别接一个 SAM 掩码解码器和几个轻量回归头，从而在**同一个 token 流里**同时产出报告文本和像素级/框级结果。
+>
+> 视觉侧是**双分支非对称**的：EVA-ViT-G 的特征 4 合 1 后投影成 256 个 token 进入 LLM 序列（参与语义推理）；SAM ViT-H 的密集特征**不进 LLM**，只作为 mask decoder 的"图像条件"被按需调用。这种设计让 8B 模型的上下文不被 64×64 的密集网格撑爆，同时保住分割的空间精度。
+>
+> 创新点落在两个"不固定"上：**病灶数量不固定** → 用变长 `<SEG>` 序列 + 每个 token 一路 mask query；**框尺度差异大** → 按 GT 面积比分 S/M/L 三档，三套独立回归头（权重 2.0/1.2/1.0）。另外用 mask↔box 几何一致性做跨任务正则。
 
-## 0. 一张图说清端到端链路
+---
 
-```text
-原始图像、报告、问答、框、掩码
-        ↓ 离线转换与患者级/样本级切分
-data/annotations/*.json + 原始图像路径
-        ↓ Dataset 取图、选任务、生成 instruction/answer、读取结构化 GT
-image tensor + task prompt + answer + boxes/masks/K
-        ↓ EVA-ViT 语义编码 + MedSAM 空间编码
-LLaMA-2-7B + LoRA 生成文本/特殊 token；预测头生成框/掩码
-        ↓ 文本 CE + 检测/定位/分割辅助损失
-checkpoint
-        ↓ 按任务提示推理，二次前向恢复特殊 token 的 hidden state
-文本、框、掩码
-        ↓ 与独立 test 标注比较
-BERT-Sim / BLEU-4 / ROUGE-L / 临床标签 F1 / IoU / Dice 等
+## 1. 必须背下来的数字（面试官最爱抽查）
+
+| 项 | 值 | 出处 |
+|---|---|---|
+| 图像分辨率 | 448×448，patch 14 → **32×32=1024 patch** | `blip_processors.py:118-126` |
+| 视觉 token 数 | 去 CLS 后 1024 → **4 合 1 = 256 个**，每 token 5632 维 | `minigpt_v2.py:89-91` |
+| 投影层 | `Linear(5632 → 4096)` | `minigpt_v2.py:67` |
+| LLM | LLaMA-3-8B，hidden 4096，上下文 7800 | `omnirad_llama3.yaml:14-23` |
+| LoRA | r=64, α=16（scale=0.25），只挂 `q_proj`/`v_proj`，dropout 0.05 | `train_configs/...yaml:38-42` |
+| 特殊 token | 5 个：`<SEG> <BOX_S> <BOX_M> <BOX_L> <LOC>` | `omnirad.py:415-417` |
+| SAM 输入 | **512×512**（不是 1024，为省显存把 pos_embed 从 64×64 双三次插值到 32×32） | `omnirad.py:102-112` |
+| SAM 输出 | `(B,256,32,32)` → 上采样到 `(B,256,64,64)` → decoder 4× 上采样 → 256×256 logits | `omnirad.py:566-569` |
+| SEG 投影 | `4096 → 512 → 256`（对齐 SAM prompt 维度） | `omnirad.py:455-459` |
+| 回归头 | `Linear(4096,512)+GELU+Linear(512,4)`；box 头多一个 `Linear(512,64)` 类别支路 | `omnirad.py:270-307` |
+| 损失权重 | text 1.0 / det 1.0 / loc 1.0 / seg_bce 1.0 / seg_dice 0.5 / cardinality 0.5 / cons_mb 0.1 / 尺度 2.0:1.2:1.0 | `omnirad.py:330-345` + `finetune.yaml:74-89` |
+| 训练超参 | lr 2e-5，warmup 2000 step，wd 0.05，grad clip 1.0，AMP fp16，100 epoch，3×3090，bs 2/卡=6 | `finetune.yaml:202-238` |
+| 数据混合 | indiana 25 / kvasir 23 / group_us 17 / slake_vqa 10 / grounding 10 / radvqa 8（合计 93） | `finetune.yaml:111-190` |
+| 尺度分档阈值 | 面积比 <1% → S；1~10% → M；>10% → L | `tools/dataset_utils.py:92-103` |
+| 推理开销 | **两段前向**（generate + 带 hidden_states 的重算），约 2× prefill | `omnirad.py:571-967` |
+| 可训练参数 | LoRA≈34M + heads/投影≈10M + **embedding+lm_head≈1.05B**（resize 后被强制设为可训） | `omnirad.py:543-557` |
+
+---
+
+## 2. 架构：多模态特征到底怎么"交互"
+
+### 2.1 关键事实：只有一条视觉流进入 LLM
+
+很多人（包括面试官）会默认"双塔特征都进 LLM 做 cross-attention"。**这里不是**：
+
+```
+图像 ──┬─ EVA-ViT-G(冻结) ─ 4合1 ─ Linear5632→4096 ─┐
+       │                                            ├─ 拼进 LLaMA 序列(前缀)
+       │                                            │
+       └─ SAM ViT-H(冻结) ── 256×64×64 密集特征 ──┐ │
+                                                  ↓ │
+                              <SEG> 隐状态 ── SEG投影 ──→ SAM MaskDecoder ──→ 掩码
 ```
 
-**一分钟总述：**“我先将不同来源的医学图像和标注整理成统一 JSON，按患者或图像划分 train、val、test。训练时，Dataset 为每张图抽取一个任务，构造图像加任务指令和对应答案，同时保留框、掩码、实例数等 GT。EVA-ViT 的语义特征经投影送入 LLaMA，MedSAM 提供分割所需的空间特征。语言模型的普通 token 用 CE 训练，`<SEG>`、`<BOX_S/M/L>`、`<LOC>` 的隐藏状态再进入各自的预测头，计算结构化损失。推理先生成文本与特殊 token，再统一做一次 LLaMA 前向解码框和掩码。评估按任务选指标，并以未参与训练的 test 文件为准。”
+- **交互点一（语义级）**：视觉 token 与文本 token 在 LLaMA 的**同一个因果注意力序列**里，靠 prompt 里的 `<Img><ImageHere></Img>` 占位符决定插入位置（`minigpt_base.py:144-158` `get_context_emb` / `prompt_wrap`）。这是"early fusion + prefix"范式，交互深度 = 32 层 self-attention，没有额外的 cross-attention 模块。
+- **交互点二（几何级）**：LLM 在 `<SEG>` 位置的隐状态被当作 **SAM 的 sparse prompt**（等价于"点/框提示"的 256 维 embedding），与 SAM 的密集图像特征在 mask decoder 里做**双向 cross-attention**（SAM 原生的 two-way transformer，2 层）。所以"语言→像素"的通道是 `hidden_state → prompt`，不是 `hidden_state → 逐像素 logits`。这正是 LISA 的 embedding-as-mask 思路。
+- **交互点三（尺度级）**：`<BOX_*>` / `<LOC>` 的隐状态直接过 MLP 回归 4 维归一化坐标，**完全不看** SAM 特征。所以框的精度上限由 LLM 的视觉 token（256 个、每个覆盖 28×28 像素）决定——这是后面"框精度不如分割"的根因，也是面试可以主动承认的 trade-off。
 
-## 1. 数据来源：为什么要混合这些数据
+> **一句话回答"多模态怎么交互"**：文本和视觉在 LLM 内做 early-fusion 全序列注意力；结构化输出则反向用 LLM 的隐状态去"提示"冻结的 SAM，形成 language-to-pixel 的解码通道。两路视觉特征按"需要语义"还是"需要几何"分工。
 
-| 数据集与来源 | 图像与标签 | 在当前方案中的主要用途 | 当前 JSON 数量 train / val / test |
-| --- | --- | --- | --- |
-| **Indiana CXR / NIH Open-i** | 胸片，`indiana_reports.csv` 与 `indiana_projections.csv`；报告含 findings、impression | 报告生成；保持语言和医学描述能力 | 5635 / 293 / 1498 |
-| **VQA-RAD** | X-ray/CT/MRI 医学图像和问答 | 医学视觉问答 | 1706 / 90 / 452 |
-| **SLAKE VQA** | 混合医学图像和问答 | 视觉问答、器官与疾病语义 | 7757 / 408 / 2094 |
-| **SLAKE Grounding** | 图像和含区域信息的描述 | 文字区域关联 / grounded caption | 440 / 23 / 116 |
-| **Group-Breast US，内部数据** | 乳腺超声帧、像素掩码、同一检查的报告 | 分割、检测、报告、指代定位、识别；由报告和框派生 VQA | 3896 / 485 / 494 |
-| **Kvasir-SEG** | 结肠镜图像、息肉掩码、原始 bbox JSON | 分割、检测、指代定位、识别及模板 VQA；属于内镜模态 | 1594 / 199 / 199 |
-| **RSNA pneumonia** | 胸片和肺炎框 | 当前默认训练配置中**未列入**，作为检测测试集使用 | 9077 / 478 / 244 文件存在，但不等于已用于训练 |
+### 2.2 视觉 token 化为什么是 4 合 1
 
-**容易被问：为什么不只用一个数据集？** 单个数据集通常只覆盖一种任务。Indiana 保留报告能力，VQA-RAD/SLAKE 提供问答，超声和 Kvasir 提供像素掩码与框，RSNA用于额外的胸片检测评估。统一模型的价值在于共享视觉语言表示，同时接入连续几何输出。
+`image_embeds[:, 1:, :]` 丢掉 CLS，然后 `view(bs, pn/4, hs*4)`——把**相邻 4 个 patch 的特征在通道维拼接**（不是平均池化）。所以：
+
+- token 数 1024 → 256，序列长度降 4 倍（对 8B 模型是救命操作，KV cache 与 attention 都是平方级）；
+- 但**信息没丢**，只是从"空间分辨率"换成"通道宽度"（5632 维），再由 `llama_proj` 压回 4096。这是 MiniGPT-v2 的原设计，等价于 patch merging（Swin 的做法）。
+- 代价：单 token 感受野 28×28 像素，**小病灶在 token 化后可能只剩 1~2 个 token 的响应**，这也解释了为什么要靠 SAM 分支补几何、为什么要按尺度分三档头。
+
+### 2.3 Token 级路由：一张表讲清
+
+| 生成的特殊 token | 走哪个头 | 输出 | 训练监督 | 代码 |
+|---|---|---|---|---|
+| 普通文本 token | LM head | 报告/VQA 文本 | 自回归 CE | `omnirad.py:1516-1548` |
+| `<SEG>`（可 K 个） | `seg_projector` → SAM `mask_decoder` | 256×256 掩码 logits | BCE(2.0) + Dice(0.5) + 异方差不确定性(0.1) | `1355-1472` |
+| `<BOX_S/M/L>` | `box_heads[scale]` | 4 维归一化框 | 按尺度加权的 L1（2.0/1.2/1.0） | `1221-1295` |
+| `<LOC>` | `loc_head` | 4 维框 (+30 类解剖 logits) | L1（解剖 CE 未实现，见 §11） | `1297-1353` |
 
-**数据来源与代码：**入口是 `tools/build_unified_dataset.py`；Indiana 转换见 `tools/converters/indiana.py`，公开数据转换见 `tools/converters/public.py`，超声见 `tools/converters/group_us.py`，Kvasir 见 `tools/converters/kvasir.py`。运行时各 builder 实际加载的是 `minigpt4/configs/datasets/*/*.yaml` 中指定的标注 JSON；不要只看 README 中的列表。
+**路由是"硬路由 + 软训练"**：
+- 路由决策由 LLM 的 next-token 概率决定（**硬**，不可微地选择头）；
+- 但"该不该吐这个 token"由 CE 监督（**软**，梯度通过 token 概率回传）；
+- 所以路由能力本质是**语言模型的格式遵循能力**，不是 MoE 的门控网络。没有 load balance、没有 gating、没有 expert capacity——被问到"和 MoE 的区别"要能立刻答这句。
+
+### 2.4 训练期与推理期的隐状态对齐（最容易被追问的细节）
+
+- **训练**：一次 forward，`output_hidden_states=True`，用 `targets == token_id` 找到特殊 token 的位置，取 `hidden_states[-1][b, pos]`（`1027-1061`）。注意这是**已经消费了该 token 之后**的隐状态（因果 LM 的语义），不是"预测该 token 的那个状态"。
+- **推理**：`generate` 结束后，把**生成的 token 重新 embed**，与 prompt embedding 拼接，**再跑一遍 forward**，同样取该位置的隐状态（`930-967`）。
+- **一致性**：两条路径取的都是"该 token 所在位置的最后一层隐状态"，因此**训练/推理口径一致**，这是这套设计能 work 的前提。代价是推理多一次 prefill。
+- **为什么不用 KV cache 只算新增部分**：理论上可以（generate 时把 hidden_states 存下来），但 `transformers.generate` 不暴露每步 hidden state，作者选择了"重算一遍"的工程妥协。**这是最容易被问的优化点**（见 §10）。
+
+### 2.5 冻结策略与显存账
+
+| 模块 | 状态 | 说明 |
+|---|---|---|
+| EVA-ViT-G | 冻结 | 但配置里开了 `use_grad_checkpoint: True`（对冻结塔无意义，纯开销） |
+| SAM image encoder | 冻结 + `no_grad` | 每个 step 仍要 forward 一次（batch 内只算一次，复用给所有 `<SEG>`） |
+| SAM prompt_encoder + mask_decoder | **可训练** | 约 4M，这是"分割能迁移到超声/内镜"的关键 |
+| LoRA (q,v) | 可训练 | ≈34M |
+| llama_proj / seg_projector / 各头 | 可训练 | ≈10M |
+| embed_tokens + lm_head | **强制可训练** | `_set_output_embeddings_trainable`，vocab 128k×4096 → **≈1.05B** |
+
+> 显存瓶颈的真正来源不是 SAM，是**词表两端的 1.05B 可训练参数**（fp32 主权重 + Adam 状态 ≈ 12GB 起）。面试可以主动说："后续优化会冻结 lm_head、只训新增的 5 行 embedding（用 hook 把梯度 mask 掉），能省 10GB+ 显存，允许把 batch 从 2 提到 6。"
+
+---
+
+## 3. 预处理管线（有 3 个隐藏坑，务必自己先知道）
+
+**训练侧**（`blip_processors.py:71-110`）：
+```python
+RandomResizedCrop(448, scale=(0.5, 1.0), bicubic) → ToTensor → ImageNet mean/std
+```
+**评估侧**（`:113-135`）：`Resize((448,448))` —— 直接**拉伸**，不保持长宽比、不 padding。
+
+**掩码与框**（`unified_us_dataset.py:98-116`）：单独从磁盘读原图尺寸的 PNG，**不做任何几何变换**；框是**原图像素坐标**。
+
+### 坑 1：训练/评估预处理不一致（最经典的掉点原因）
+`RandomResizedCrop(scale 0.5~1.0)` 会**随机裁剪 + 缩放**，而 GT 掩码/框对应的是**完整原图**。于是：
+- 视觉塔看到的是"局部放大的一块"，监督信号说的是"整张图的第 3 个病灶" → **dense 任务的输入-标签几何不对齐**；
+- 评估时换成 Resize（无裁剪），输入分布与训练不同 → 推理端"看起来更模糊/更完整"，模型没见过。
+
+这在分类任务里只是正则，在**分割/检测里是标签噪声**。正确做法：dense 数据集改用 `Resize + pad`（保持长宽比）+ 同步变换 mask/box，或至少把 `min_scale` 提到 0.9。
+
+### 坑 2：框归一化用的常量是 448，而不是图像真实宽高
+`_compute_det_loss` 里 `gt_bbox / self.img_size`（`1283`），`self.img_size=448`（固定常量）。但 GT 框是**原图像素坐标**。以 Kvasir 一张 800×600 的图为例，`x2=700 → 700/448 = 1.56 → clamp(0,1) → 1.0`：**右侧的框全部被压到右边界**，模型学到的是"框贴边"，推理时 `pred*448` 又变回 448，IoU 直接崩。
+> 这是我认为**代码里最值得改的一处**，也是"推理阶段效果不好"的头号可疑点。修法：用 `samples["image_size"]` 逐样本归一化（数据集已经把真实宽高传进来了 `unified_us_dataset.py:87`），并在 generate 时用同尺寸反归一化。
+
+### 坑 3：一个标量同时归一化 x 和 y
+非方形图像上，用同一个 448 除 x 与 y 会让"归一化后的面积比"失去物理意义，与 S/M/L 的分档阈值（面积比 1%/10%）口径不一致，尺度桶标签会抖。
 
-## 2. 离线预处理：从原始数据到统一标注
+---
 
-### 2.1 各数据集怎样转成训练材料
-
-1. **Indiana：**按 `uid` 连接报告表和投照图表；清理 Open-i 的 `XXXX` 脱敏占位符，合并 findings 与 impression，过滤几乎为空的报告。按 `uid` 将同一检查的不同视角放入同一拆分，转换器生成约 76%/4%/20% 的 train/val/test。这避免同一报告的正侧位图跨集合泄漏。
-2. **超声：**原始目录按患者/检查/帧存图像与合并掩码，报告以检查为单位。转换器将二值掩码做连通域分离，保存实例掩码；逐实例取最小外接框，并计算框面积比例；从报告提取 `anatomy_region`；记录报告、派生问答、框、掩码路径和 `K`。按患者 ID 分 train/val/test。**同一检查的多个帧可能共享同一份报告**，因此“每帧有独立人工报告”不准确。
-3. **Kvasir：**从原始 bbox JSON 读取框、尺寸和类别，根据面积分 S/M/L；记录同名掩码路径，并根据目标数量、大小与位置生成模板问答。转换器按 `patient_id` 字段拆分，而该字段当前设为 `image_id`，实际效果是**图像级拆分**，不能称为真实患者级拆分。
-4. **VQA-RAD / SLAKE / RSNA：**`public.py` 提供将继承的 MiniGPT-Med 格式映射到统一 schema 的转换器。注意此转换入口的默认输出名与训练配置使用的旧式文件名不完全一致；复现实验要逐一检查 `ann_path` 与文件是否一致。
-
-统一记录的核心字段是 `image_id`、`image_path`、`modality`、`anatomy`、`image_size`、`tasks`。`tasks` 可包含 `report`、`vqa`、`grounded_caption`、`boxes`、`masks`、`K`；框记录含坐标、类别、尺度和可选解剖区域。**JSON 只存路径和元数据，图像/掩码在 Dataset 运行时加载。**
-
-### 2.2 数据切分与防泄漏如何回答
-
-- Indiana 使用 `uid` 分组；超声使用患者 ID 分组；两者都要防止同一人的图像或同一份报告跨 train/test。
-- Kvasir 当前没有真实患者 ID，因此这里只能说按图像 ID 拆分。
-- VQA-RAD、SLAKE 的 val 文件由 `tools/split_val.py`从原训练标注划出；公开数据的拆分方式需结合原始来源文件核对。
-- test 只用于最终评估；训练中的 checkpoint 选择应只用 val。**但当前多数据集 val 加载逻辑有冲突，见第 7 节。**
-- 病例数量、图像数量、问答对数量是不同统计口径；上述表格给的是 JSON 记录数，不能直接当患者数。
-
-### 2.3 在线读取一条样本时发生什么
-
-Dataset 返回 `image`、`instruction_input`、`answer`、`image_id`，结构化数据集还返回 `boxes`、`box_scales`、`anatomy_regions`、`masks`、`K` 与 `has_structured_supervision`。超声和 Kvasir 从可用任务中随机抽取一个任务；有病灶时才开放 refer/identify，VQA 仅在有有效问答时开放。比如同一帧本次抽到 `[segmentation]`，下次可抽到 `[detection]`，而**一次取样通常只监督一个任务答案**。
-
-提示词的基本结构是 `[INST] <Img><ImageHere></Img> [任务标签] 问题 [/INST]`。`<ImageHere>` 在模型内被视觉 embedding 替换。报告/VQA/识别主要是文字答案；分割答案重复 `K` 次 `<SEG>`；检测答案对每个框给一个 `<BOX_S/M/L>`；指代定位答案包含 `<LOC>`。传统文本数据通过 `add_default_structured_fields()`补空框/空掩码等字段，以便混合 batch 保持 schema 一致。
-
-### 2.4 图像和标注预处理细节
-
-- Indiana 胸片及超声灰度图先转为 RGB 三通道；Kvasir 原本为彩色 RGB。训练 `blip2_image_train` 采用 `RandomResizedCrop(448)`、`ToTensor()`及 CLIP 风格 Normalize。默认独立评估脚本通过 `init_model()`取第一个数据集配置的 **train processor**，所以评估时也可能采用随机裁剪，需固定为确定性的 eval resize 才能稳定比较。
-- 掩码读取时阈值化为 0/1 张量；框读取为 `[x1,y1,x2,y2]` 浮点张量。batch 内数量不同时，collater 对框补零并附 `box_padding_mask`；模型提取结构化目标时剔除补零框。掩码保留每样本一个列表。
-- MedSAM 分支把图像插值到 512，图像编码后若特征不是 64×64，再插值成 64×64，以适配当前 mask decoder 的固定空间尺寸。EVA 路径与 MedSAM 路径共用输入图像张量的做法存在归一化问题，见第 7 节。
-
-**高频问答：为什么要统一 schema？**“因为文字数据和结构化数据来源不同；统一字段可让训练入口用同一套 Dataset/模型 forward，缺失的几何标签用空值标记，结构化损失只在有标注的样本上启动。”
-
-## 3. 训练：初始化、采样、前向、损失、优化
-
-### 3.1 模型如何初始化
-
-`train.py`读取配置、初始化分布式环境与随机种子，然后通过 registry 建数据集、模型和 runner。默认配置使用 EVA-ViT-G、LLaMA-2-7B Chat、LoRA，以及 MedSAM ViT-B 的稠密图像分支；`ckpt` 指向 MiniGPT-Med 权重，用于视觉语言部分的初始化。EVA 和 MedSAM 图像编码器按配置冻结；新增 token embedding、语言输出层、视觉投影、LoRA 和结构化预测头是主要可训练部分。LLaMA-3 另有独立配置，不能直接复用 LLaMA-2 的 MiniGPT-Med checkpoint。
-
-**别背 README 的旧参数：**当前 LLaMA-2 训练 YAML 是 `batch_size=1/数据集`、`max_epoch=30`、`iters_per_epoch=5000`、`init_lr=5e-6`、`min_lr=5e-7`、`warmup_steps=1000`、`weight_decay=0.05`、`grad_clip=1.0`、`amp=True`、`accum_grad_iters=1`、`max_keep_ckpts=3`。`distributed=True` 表示启用分布式路径，实际 GPU 数取决于启动命令和环境，不应直接说固定三卡。README 的 100 epoch、batch size 2×3 等不是这份 YAML 的实际值。
-
-### 3.2 多数据集与多任务如何采样
-
-默认训练 YAML 列出 **6 个训练数据集**：Indiana、VQA-RAD、SLAKE VQA、SLAKE Grounding、Group-Breast US、Kvasir；RSNA只在 `evaluation_datasets` 中。它们的 `sample_ratio` 分别是 25、8、10、10、17、23。`ImageTextPretrainTask.build_datasets()`把比例挂到各训练数据集上，但当前 `reorg_datasets_by_split()`把多种 map-style 数据集交给 `ConcatDataset`；runner 注释也说明“未提供 train_dataset_ratio 时拼接数据集”。因此不能仅凭 YAML 就声称**实际执行了按这些比例的温度采样**，应先检查数据 loader 的真实类型与取样统计。单个超声/Kvasir样本内部再随机抽一个任务。
-
-### 3.3 一个 batch 的前向与损失
-
-1. EVA-ViT 输出视觉 token，按 4 个 patch 合并，线性投影到 LLaMA 隐藏维度。prompt 的 `<ImageHere>` 插入视觉 embedding，答案在 teacher forcing 下作为目标序列。
-2. LLaMA 返回 logits 和最后一层 hidden states。普通词、特殊 token 的**生成决策**都由交叉熵监督；代码将 logits 转 FP32 再算 CE，并忽略 `-100` 的非目标位置。
-3. 在目标答案中扫描 `<SEG>`、`<BOX_S/M/L>`、`<LOC>`，保留样本索引与出现顺序。`<BOX_*>` 进入对应尺度框头，与 GT 按样本和尺度配对后做加权 L1；`<LOC>` 进入定位头做框 L1；`<SEG>` 经投影与 MedSAM 特征一起进 mask decoder，做 BCE + Dice + 不确定性项。
-4. mask–box 一致性函数仅在**同一样本同时出现 `<SEG>` 与 `<BOX_*>`**时计算；当前单任务采样下通常触发不了。解剖分类、GIoU、检测类别 CE、另两类一致性并未进入当前训练总损失。
-
-用面试可讲的简式表示：`L = λ_text·CE + λ_det·L1_box + λ_loc·L1_loc + L_seg + λ_mb·L_cons`。其中 `L_seg` 内部含 BCE、Dice 和不确定性项。配置有 `loss_weights.seg`，但 `forward()`目前直接加 `L_seg`，没有再乘这个总系数；`cardinality` 的离散计数项也不能直接反传到 token 数量。
-
-### 3.4 反向传播、稳定性与 checkpoint
-
-runner 以 AdamW 只优化 `requires_grad=True` 的参数；矩阵权重用 weight decay，bias/归一化等参数不加衰减。学习率采用 warmup + cosine。`BaseTask` 的训练循环用 AMP `GradScaler`、梯度裁剪，并跳过 NaN/Inf loss 或梯度。每 epoch 保存 checkpoint，若验证指标改善则保存 `checkpoint_best.pth`，并保留最近若干普通 checkpoint。**这说明代码有稳定性保护，不等于已经证明训练不会发散。**
-
-设计文档写了四阶段渐进训练；当前入口是单份联合微调 YAML。`curriculum_epochs: 8` 只是配置字段，模型当前没有把它设置为生效属性，也没有相应的 `set_curriculum_phase()`，不能说八轮冻结课程训练已经执行。
-
-## 4. 推理：从一张图到文本、框和掩码
-
-### 4.1 通用推理路径
-
-1. 选择任务标签及问题，如 `[segmentation] Segment all visible lesions or nodules.`，用图像处理器生成张量，拼成对话格式。
-2. `model.generate()`先对 EVA-ViT 特征和文本执行 LLaMA 自回归生成；默认评估使用 `do_sample=False`。没有特殊 token 就返回文本；出现特殊 token 才进入结构化解码。
-3. `_run_second_pass()`把生成的 token 重新嵌入并与 prompt 拼接，再跑一次 LLaMA，取各特殊 token 位置的 hidden state。这一步用于恢复预测头输入；推理开销因此包括额外一次 LLaMA 前向。
-4. `<SEG>`：一个 token 对应一个 sparse prompt，与 MedSAM 的稠密特征输入 mask decoder，得到一张概率掩码。`<BOX_S/M/L>`：调用对应框头，sigmoid 归一化后乘 `img_size`。`<LOC>`：调用定位框头。`raw_text` 会保留特殊 token，并在框 token 后插入坐标字符串供旧评估器解析。
-5. 返回字典含 `text`、`raw_text`、`seg_count`、`box_tokens`、`has_loc`；请求 `return_masks=True` 时返回 `masks`，请求 `return_boxes=True` 时返回结构化 `boxes`。模型即使生成了 `<SEG>`，若未请求 `return_masks=True`，外层结果里也不会附掩码列表。
-
-**可举的例子：**“乳腺超声输入 `[segmentation]`。如果模型生成两个 `<SEG>`，二次前向提取两个位置的 hidden state，分别作为 SAM 提示，输出两张掩码；如果生成零个，则 `masks=[]`。换成 `[detection]` 时，若输出 `<BOX_S>`，就由小目标头产生连续框坐标。”这是**机制举例**，不是实际效果证明。
-
-### 4.2 LLaMA-2 与 LLaMA-3 的提示格式
-
-原数据集多用 `[INST]...[/INST]`。`MiniGPTBase._to_chat_format()`在检测到 LLaMA-3 或配置指定时把它改成 LLaMA-3 header 格式；评估脚本也会选择相应 conversation template。面试中不要把“仓库有 LLaMA-3 配置”说成“默认训练就是 LLaMA-3”；实际模型家族、tokenizer、checkpoint 必须一致。
-
-## 5. 评估：训练期验证和独立测试分开讲
-
-### 5.1 训练期间如何选 checkpoint
-
-`OmniRadTask.valid_step()`用 `model.generate()`统计文本、`seg_count`、框 token 等。`after_evaluation()`以预测 `<SEG>` 数等于样本 `K` 的比例作为 `cardinality_acc`，并把它返回为 `agg_metrics`，runner 用它挑选 `checkpoint_best.pth`。这**不是**综合 Dice/IoU/报告质量分数。非分割样本往往 `gt_K=0` 且 `seg_count=0`，会影响该指标的解释；需要在明确的分割验证集上单独统计。
-
-### 5.2 独立测试脚本实际算什么
-
-`eval_scripts/model_evaluation.py`读取 `eval_configs/omnirad_evaluation.yaml`，加载各 test JSON，按任务生成结果并在 `eval_results/omnirad/<dataset>/` 下保存预测和 `results.json`。任务与指标如下：
-
-| 任务 | 测试集 | 当前脚本使用的指标 | 指标含义与注意事项 |
-| --- | --- | --- | --- |
-| 报告 | Indiana、Group-Breast US | SentenceTransformer 句向量 cosine（代码称 BERT-Sim）、BLEU-4、ROUGE-L、临床标签 micro/macro F1 | 语义相似、词面重合、最长公共子序列覆盖及胸片临床标签一致性；超声报告的胸片标签 F1 临床意义有限 |
-| VQA | VQA-RAD、SLAKE VQA、Kvasir VQA | BERT-Sim | 问答语义相似；不能替代严格的诊断正确率或开放/封闭题分层准确率 |
-| 检测 / 指代定位 | RSNA、Group-Breast US、Kvasir | 平均 IoU | 预测框与 GT 框交并比；多框时 US/Kvasir 用每个 GT 的最佳预测框再平均，并非一对一匹配 mAP |
-| SLAKE Grounding | SLAKE Grounding | IoU | 解析 grounded caption 中的框并与 GT 比较 |
-| 分割 | Group-Breast US、Kvasir | 平均 Dice | 预测掩码与 GT 掩码先分别合并成 union 再算 Dice，**不是逐实例 Dice** |
-| 识别 | Group-Breast US、Kvasir | `identify_accuracy` | 实现中是 GT 类别字符串出现在预测文本中即算对，属于宽松的文本包含匹配 |
-
-常用公式：`IoU = |B_pred ∩ B_gt| / |B_pred ∪ B_gt|`；`Dice = 2|M_pred ∩ M_gt| / (|M_pred| + |M_gt|)`。分割预测保存 PNG 时以 0.5 阈值二值化。**这份测试脚本的 US/Kvasir 路径主要报告 Dice 和 IoU；README 所列 Mask IoU、GIoU、ReasonSeg gIoU/cIoU、K=0 假阳性率并非都由当前入口实际输出。**
-
-### 5.3 如何设计可信的对比实验
-
-在同一 test split、同一图像预处理和同一任务提示下比较 MiniGPT-Med、OmniRad 及其他基线；报告结果同时写样本量、指标定义、均值和波动。针对创新点做消融：① 去掉 MedSAM/分割头；② 单一 BOX 头对比 S/M/L 三头；③ 关掉不确定性损失；④ 有效接通联合任务采样后比较有无 mask–box 一致性；⑤ 单独测试 K=0、K≥2、小目标。当前仓库 README 结果仍为 TBD，**消融属于建议的验证设计，不能写成已完成实验**。
-
-### 5.4 评估入口的复现注意点
-
-`eval_scripts/metrics.py`在 import 时就加载本地 SentenceTransformer，要求 `BERT_MODEL_PATH` 或 `weights/bert_model/modules.json` 存在，即使只想跑空间指标也会经过该模块。该文件还导入 `eval_scripts.chexbert`，但当前仓库的 `eval_scripts` 目录中未见 `chexbert.py`，所以报告评估入口按现状可能无法直接导入，运行前需补齐依赖或改造导入。评估 YAML 的 checkpoint 是绝对 Linux 路径，在当前工作区运行需要替换为真实权重路径。**不要仅凭脚本存在就说所有指标已成功跑出。**
-
-## 6. 可直接背的流程追问
-
-### Q1：一条超声样本从原始数据到模型输入经历什么？
-
-> 原始帧、掩码和检查报告先离线转换。连通域把合并掩码拆成实例，实例掩码生成 bbox 和 S/M/L 尺度，报告提供文字与可选解剖区域，再按患者分拆分。Dataset 加载图像和掩码、读框与 K，随机选一个任务，构造 `[任务标签] + <ImageHere>` 的 instruction 和相应答案，最后 collater 处理不同实例数。
-
-### Q2：为什么报告/VQA 数据也能混进结构化模型训练？
-
-> 它们仍训练视觉编码到语言模型的语义链路。缺少框和掩码的样本补空结构化字段，`has_structured_supervision=False`，模型只算文本 CE；有结构化标注的样本再启动检测、定位或分割损失。
-
-### Q3：为什么分割要 EVA 和 MedSAM 两条视觉路径？
-
-> EVA 给语言模型语义 token，用来理解问题、决定病灶数量和输出 token；MedSAM 给像素空间特征，供 mask decoder恢复边界。一个主要回答“是什么”，另一个主要支持“在哪里”。
-
-### Q4：训练时 token 与 GT 怎样配对，推理时又怎样配对？
-
-> 训练是 teacher forcing：答案中每个特殊 token 的位置和样本索引是已知的，按同一样本的标注顺序配对。推理先让模型自由生成，再定位实际出现的特殊 token，通过二次前向取隐藏状态送入对应头。生成错误的 token 类型或数量会直接影响后续几何输出。
-
-### Q5：为什么需要二次前向？代价是什么？
-
-> 当前 `generate()`首先拿到生成 token 序列，随后统一恢复这些 token 的隐藏状态用于几何头，而不是在自回归生成过程中逐 token 拿隐藏状态。好处是几种结构化输出共用一次恢复过程；代价是额外一次 LLaMA 前向和相应显存/时延。
-
-### Q6：怎么证明小病灶改进来自尺度感知，而不是数据更多？
-
-> 固定训练数据、主干、训练步数和评估集，只把单 BOX 头替换为三尺度头；按小、中、大目标分组报告 IoU 或召回，并比较总体结果。当前仓库没有足够的正式消融结果，面试中应说清实验设计与待补证据。
-
-### Q7：怎么防止医疗数据泄漏？
-
-> 优先按患者/检查分组，而非随机按图像拆分；同一检查的多帧和报告只能出现在一个 split。公开数据若无患者 ID，要说明拆分粒度和限制。所有模板派生问答应仅基于本 split 的原标注生成，test 不参与训练和调参。
-
-### Q8：最需要先修的复现问题是什么？
-
-> 第一，图像 `RandomResizedCrop` 需要与 bbox、mask 同步几何变换，评估改成确定性预处理；第二，MedSAM 需要独立的原始 RGB 预处理；第三，统一转换器的输出文件名与 builder 读取路径需要对齐；第四，多个 val 数据集与 runner 的“只支持一个 val”逻辑需要协调。完成这些后才能解释 Dice/IoU 和比较创新点收益。
-
-## 7. 当前代码与文档必须区分的边界
-
-1. **训练数据数目：**默认训练 YAML 是 6 个数据集，RSNA 在评估配置中；README 有“7 个训练数据集”的旧描述。
-2. **验证集冲突：**多个 builder 配置 `val_ann_path`，但 `concat_datasets()`在非 train split 上断言只能有一个数据集；当前默认配置不能直接等同于已成功完成多数据集训练与 best checkpoint 选择。
-3. **转换文件名冲突：**`public.py` 默认生成 `radvqa_train.json`、`slake_train.json`、`rsna_eval.json`，训练/评估配置读取 `vqa_train.json`、`grounding_train_SLAKE.json`、`RSNA_test.json` 等旧文件。现存文件可能已由其他流程准备，复现时必须明确来源。
-4. **图像与几何标注未同步增强：**随机裁剪只施加于图像，原始框和掩码未跟着同一变换；结构化指标和损失可能失真。
-5. **MedSAM 输入归一化：**目前共用已经为 EVA 归一化的输入，MedSAM 又按自己的均值方差处理，需单独规范其输入范围。
-6. **K=0 与多实例：**代码形式上允许 `K=0` 和多个 `<SEG>`，但现有数据转换与 Kvasir 掩码路径不保证足够的零病灶或逐实例监督。
-7. **尚未闭环的创新：**不确定性图未作为推理返回/拒判依据；解剖分类未训练；mask–box 一致性在单任务采样中很难触发；其余两类一致性未实现。
-8. **评估依赖与权重：**本地 BERT 模型、`eval_scripts.chexbert`、MedSAM/LLaMA 权重和评估 YAML 中的 checkpoint 路径都要实际可用；本仓库的 README 指标占位不能当结果。
-
-**最后的面试收束：**“我能把数据构建、样本级任务选择、双视觉路径、token 路由、联合损失、二次前向解码和按任务评估串成一条可追溯的代码链；同时我会明确哪些是已经接通的实现，哪些还要修复数据对齐并做消融才能证明有效。”
-
+## 4. 损失函数全景
+
+```
+L = 1.0·L_text
+  + 1.0·L_det   (按尺度加权 L1: S×2.0, M×1.2, L×1.0)
+  + 1.0·L_loc   (L1)
+  + 1.0·L_seg   (内部已含 1.0·BCE + 0.5·Dice + 0.1·L_unc)
+  + 0.1·L_cons  (mask 紧致框 vs 预测框 的 L1)
+  + 0.5·CardinalityPenalty   ← 标量常数，无梯度，见下
+```
+
+工程细节（这些都是加分项，面试官问"训练稳定吗"就答这些）：
+1. **CE 在 fp32 手算**，且 `logits.nan_to_num(posinf=1e4, neginf=-1e4)`（`1516-1518`）——fp16 AMP 下 logits 溢出会让 loss 变 NaN 并污染梯度。
+2. **非法 label id 清洗**：`labels >= vocab_size` 或负数非 -100 → 一律改 -100（`1525-1537`），防止 CUDA gather 越界产生 NaN。这是新增特殊 token + resize embedding 时最容易踩的坑。
+3. **空 answer 保护**：全 -100 时返回 0 loss 而非 NaN（`1539-1548`）；`preparing_embedding` 里空答案替换成 `"."`（`minigpt_base.py:343-354`）。
+4. **aux loss 逐个 NaN 检查**并置零（`1108-1119`）；总损失 `>50` 时 clamp（`1609-1612`）；text_loss 为 NaN 时返回 NaN 让外层 GradScaler 捕获并 skip step（`1569-1596`，注释解释了为什么不能返回 0）。
+5. **不确定性损失的实际形式**（`1433-1445`）：
+   `log_var.clamp(-4,4)` → `σ² ∈ [0.018, 54.6]` → `inv = 1/(2σ²+1) ∈ [0.009, 0.53]` → `weighted_bce = (bce*inv).mean() + 0.5*log_var.mean()`。
+   **注意：这里是对整个 batch 的标量 BCE 做加权，而不是逐像素**（`bce_loss` 是 `binary_cross_entropy_with_logits` 的 mean 标量），所以"逐像素不确定度"实际上退化成了"整图置信度缩放"。这是一个**实现与叙事不完全一致**的地方，被深挖时要能承认。</br>
+   另外 uncertainty head 的输入是 `masks`（logits，未 sigmoid），单通道 1→128→1 卷积，感受野 3×3，**几乎无空间上下文**。
+
+---
+
+## 5. 训练链路
+
+```
+JSON(unified schema) 
+  → Dataset.__getitem__: 每帧随机抽 1 个任务（report/seg/det/refer/identify/vqa）
+  → 拼 prompt: "[INST] <Img><ImageHere></Img> {task_prompt} [/INST]"
+         （LLaMA-3 下由 _to_chat_format 改写成 header 格式，minigpt_base.py:106-142）
+  → collater: 框按 batch 内 max K 右侧零填充 + box_padding_mask
+  → preparing_embedding: prompt_wrap 把 256 个视觉 token 插到 <ImageHere> 处
+  → forward: labels 只在 answer 段有值（-100 屏蔽 prompt）
+  → 抽特殊 token 隐状态 → 4 个辅助损失 → 反向
+```
+
+要点：
+- **"多任务"其实靠数据侧的任务随机采样**（`unified_us_dataset.py:173` `random.choice(available_tasks)`），不是多任务头；同一帧在不同 epoch 会被当成不同任务，天然做了数据增广。
+- **数据集混合用 `sample_ratio` 相对权重**（`runner_base.py:594-600` MultiIterLoader）。README 说"temperature-2 采样"，但代码里是**直接用 ratio 作为迭代权重**，没有温度参数——这是个可以主动澄清的小口径差异。
+- **验证集选模型用 `cardinality_acc`**（`omnirad_task.py:86-106`）：即 `pred_seg_count == GT_K` 的比例。**问题**：它和 Dice/IoU 弱相关，可能选出"数量对但掩码烂"的最优 ckpt。建议改成任务指标加权（Dice + IoU + BERT-Sim）。
+- **课程学习是死代码**：`finetune.yaml` 有 `curriculum_epochs: 8`，`runner_base.py:374-392` 会 `getattr(model,'curriculum_epochs',0)`，但 `OmniRad.__init__`/`from_config` 从未接收该参数，也没有 `set_curriculum_phase` 方法 → **永远不生效**。
+
+---
+
+## 6. 推理链路（两段前向）
+
+```
+① encode_img(image)               → 256 视觉 token        [EVA，1 次]
+② get_context_emb(prompt, img)    → 拼接 prompt embedding
+③ llama.generate(inputs_embeds)   → 生成 token 序列（含特殊 token）
+④ 若序列中出现任一特殊 token：
+     encode_dense_image(image)    → SAM 密集特征 [1 次，batch 内共享]
+     gen_embeds = embed(outputs)
+     llama(inputs_embeds=[prompt; gen], output_hidden_states=True)  → 第二段
+     对每个特殊 token 位置调对应头
+⑤ raw_text 中把 <BOX>/<LOC> 替换成 <LOC>{<x1><y1><x2><y2>}（像素坐标），供评估正则解析
+```
+
+坑（都在 §10 展开）：
+- `stopping_criteria` **构造了但没传给 `generate`**（`622-624` 构造，`644-655` 调用时没传）→ 停止完全依赖 `generation_config.eos_token_id`。LLaMA-3 训练用的结束符是 `<|eot_id|>`(128009)，若 config 里只有 `<|end_of_text|>`(128001)，模型会**一直生成到 max_new_tokens=200**。
+- `seg_count` 是在**整条输出序列上数 token**（`732`），**包含 EOS 之后的垃圾 token** → 结合上一条，会产生"幻影 `<SEG>`"和多余掩码。修法：先按第一个 EOS 截断 `outputs` 再做一切统计。
+- batch 推理时 prompt 是**左填充**（`640`），`position_ids` 在部分 transformers 版本下由 `cache_position` 推出而非 attention_mask 累积 → 填充样本的位置编码可能偏移。**验证方法：bs=1 与 bs=8 对同一张图跑，比 BERT-Sim/IoU 差异。**
+
+---
+
+## 7. 评估链路与指标口径（防守重点）
+
+| 任务 | 实现 | 口径细节 |
+|---|---|---|
+| 报告生成 BERT-Sim | `metrics.py:44-48` | **`paraphrase-MiniLM-L6-v2` 的余弦相似度**，不是临床 BERT；好处是与 MiniGPT-Med 基线同口径可比 |
+| BLEU-4 / ROUGE-L | `metrics.py:489-606` | 纯 Python 实现（n-gram 精度 + BP；LCS） |
+| CheXbert-F1 | regex 标签器 + 否定检测 | 14 类胸片标签，超声上意义有限（README 已注明） |
+| 检测/指代 IoU | `model_evaluation.py:503-568` | **对每个 GT 框取与所有预测框的最大 IoU，再帧内平均** → 多预测不受惩罚（只被 cardinality 间接惩罚） |
+| 分割 Dice | `metrics.py:309-383` | 预测与 GT 各自**取并集**后算 Dice（规避实例顺序问题）；预测缺失记 0；双空记 1 |
+| Identify Acc | `metrics.py:390+` | 类别字符串精确匹配 |
+
+**三个必须主动交代的口径问题**（不讲会被抓）：
+1. IoU 用"贪心 best-match"，没有 FP 惩罚 → 多吐几个框不掉分，Dice 用并集同理。所以指标对"过分割/过检测"是**宽容**的。
+2. `average_dice` 把预测掩码按 GT 尺寸 NEAREST 缩放；而预测掩码本身是 256×256（SAM 输出），**上采样到原图分辨率**会带入边界误差，尤其小病灶（面积占比小时 Dice 对边界极敏感）。
+3. identify 任务的答案里**包含 prompt 给出的 bbox token**，模型只需学会"复制 + 吐类别词"，而类别在数据集里近乎常量（`polyp`/`lesion`）→ 该指标接近饱和，**不能作为核心卖点**。
+
+---
+
+## 8. 简历三条 claim 的逐条拆解与话术
+
+### 8.1 "设计多任务路由机制，将隐状态映射到分割解码器、检测头和定位头"
+
+**代码事实**：`expand_vocab` 扩 5 个特殊 token → resize embedding → 训练后这些 token 有了独立 embedding；生成阶段按 token id 分发到 `seg_projector+mask_decoder` / `box_heads[S/M/L]` / `loc_head`。
+
+**怎么讲（3 句）**：
+1. 我们把"任务"从**模型结构层面**下移到**词表层面**：新增 5 个结构性 token，任务切换变成"模型决定下一个词是不是结构性 token"。
+2. 路由的粒度是**token 级而非样本级**——同一段输出里可以混排"文本 + 3 个 `<SEG>` + 2 个 `<BOX_M>`"，天然支持"报告里夹带定位"这种临床表达。
+3. 好处是**零结构改动即可扩展新任务**（加一个 token + 一个头），且共享同一套语言先验；代价是路由是硬选择、不可微，正确性完全依赖 LLM 的格式遵循能力。
+
+
+
+**可能追问**：
+- Q: 这不就是 prompt 里加特殊符号吗，凭什么叫"路由机制"？
+  A: 差别在于**输出去向被 token 决定了**。普通特殊符号只影响输入分布；这里 token 隐状态会**绕过词表**进入另一个参数子空间（SAM decoder / 回归头），是一个真正的 dispatch。同时我们做了三件事让它 work：(a) 新 token embedding 随机初始化、必须放开 embed/lm_head 才学得动；(b) 每个头有独立监督，梯度只从对应位置回流，避免任务互扰；(c) 用尺度分档把"回归难度"分治。
+- Q: 路由错了（该吐 `<SEG>` 吐成文本）怎么办？
+  A: 训练侧靠 CE 拉概率；推理侧可以加 **logits processor 做语法约束**（比如 `[segmentation]` 任务下强制前 N 个 token 为 `<SEG>`），或改成"结构化 token 前置"的输出顺序，让结构先于文本，文本再依赖结构（见 §10）。
+- Q: 为什么不像 MoE 那样学一个 gate？
+  A: MoE 的 gate 在**每个 token 每层**做软加权，参数和通信开销大且需要 load balance；我们的"专家"是**输出侧的异构解码器**（SAM / MLP），输入维度都不同，无法做软加权。用语言模型自己当 gate，等于免费复用 8B 的语义判断，且可解释（人能读出它选了哪个 token）。
+
+### 8.2 "自适应多查询分割……解决病灶数量不固定"
+
+**代码事实**：
+- K 由答案里的 `<SEG>` 个数决定，K=0 时答案是 `"No lesion is visible."`（`unified_us_dataset.py:217-222`）——**这是"自适应"的核心：模型输出一段自然语言拒绝，而不是输出一个空掩码**；
+- 每个 `<SEG>` 独立走一次 mask decoder（`multimask_output=False`，`omnirad.py:214`），K 个 query 共享同一份 SAM 密集特征；
+- "自适应"的监督：`L_cardinality = |n_emitted - K_gt| / max(K_gt,1)`，权重 0.5。
+
+我们把实例数从结构超参数变成生成内容：答案里写几个 <SEG> 就有几个实例，K=0 时答案直接是一句“未见病灶”。每个 <SEG> 的隐状态投影成 256 维 query，共享同一份 SAM 密集特征，各自解出一张掩码。这样天然支持变长、支持拒绝，而且输出顺序带语义（先描述大的）
+**可能追问**：
+- Q: K 的上限？会不会无限吐 `<SEG>`？
+  A: 训练数据里 K 最大是数据集本身的实例数（个位数），`max_new_tokens=200` 兜底；没有显式上限约束，理论上会重复吐。改进：约束解码 + 训练时加"K 超过 GT 就截断"的负样本。
+- Q: 多个 query 会给出重复掩码怎么办？
+  A: 当前没有 NMS/去重，评估用并集所以不惩罚重复（见 §7）。要做的话：query 之间加 diversity loss（掩码两两 IoU 惩罚）或用 Hungarian matching 做一对一监督。
+- Q: 为什么不用 Mask2Former 那种 object query？
+  A: 那是**固定 query 数 + 匈牙利匹配**，输出顺序无意义、不支持 K=0 的自然拒绝，也不能和文本生成耦合。我们用 LLM 的自回归决定 query 数量与**语义顺序**（先大病灶后小病灶），并且 K=0 能用一句话解释原因——这在临床上比"输出 0 个 query"更有用。
+
+### 8.3 "解剖学感知定位机制，解决定位表达不符合临床习惯"
+
+**代码事实（这里必须诚实）**：
+- `loc_head` 有 `anatomy_head`（30 类），但**训练时是 `pass`**（`omnirad.py:1344-1347`，注释写着 "proper anatomy label mapping will be added later"）→ **这个分支从未被训练**。
+- 真正的"解剖感知"发生在**文本侧**：`_refer_answer` 生成的答案是 `"The lesion is located in {region} <LOC>."`（`unified_us_dataset.py:236-242`）——模型必须同时吐出**解剖区域词**和 `<LOC>` token，所以"解剖"是通过语言建模学到的，不是通过那个 30 类头。
+- 另外 `report ⇌ region` 的双向链接：报告文本与 `anatomy_region` 共现，属于**隐式**的多任务正则。
+
+定位拆成符号和连续两部分：按 GT 面积比把框分成 S/M/L 三档，三档各一个回归头、小目标加权 2 倍，缓解大小目标共用一个回归器时的方差冲突；同时让模型在答案里说出解剖区域词，和 <LOC> 坐标形成一致表达。尺度 token 是写在答案里的监督信号，所以模型必须学会主动判断大小。定位拆成符号和连续两部分：按 GT 面积比把框分成 S/M/L 三档，三档各一个回归头、小目标加权 2 倍，缓解大小目标共用一个回归器时的方差冲突；同时让模型在答案里说出解剖区域词，和 <LOC> 坐标形成一致表达。尺度 token 是写在答案里的监督信号，所以模型必须学会主动判断大小。
+
+**怎么讲（改写成可信版本）**：
+> 定位不是纯回归：我们把"位置"拆成**符号化的解剖区域**（可读、可核对，如 `right_breast`）和**连续的像素框**（`<LOC>`）两部分，同一句回答里同时给出。这样模型被迫在"说清在哪个器官"和"指出具体坐标"之间建立一致的表征；对临床来说，"右下象限"比"IoU=0.6 的框"更符合描述习惯。此外按 GT 面积比分 S/M/L 三档、每档一个独立回归头，缓解小目标与大目标共用一个回归器时的方差冲突。
+
+**可能追问**：
+- Q: 30 类解剖标签哪来的？怎么评估的？
+  A: 来自数据集 schema 的 `anatomy_region` 字段（如 `right_breast`、`colon`），由标注/转换器写入；**目前没有单独评估 anatomy 分类准确率**，它是通过 refer 任务的文本指标间接体现的。→ 这是你可以顺势说"下一步工作：把 anatomy_head 接上 CE 监督，并报告解剖分类 Acc"。
+- Q: 解剖感知对 IoU 有贡献吗？
+  A: 直接的机制是"分尺度头 + 文本里的区域约束"。严格证明需要消融（去掉 region 词看 IoU），**这个消融我们还没跑完**——如果被追问，就说"论文里的 +0.1370 是整包（多查询分割 + 分尺度头 + 解剖描述）的联合收益，单项归因的消融在补"。
+
+### 8.4 三个指标提升怎么讲（可比性防守）
+
+| 指标 | 值 | 必须补的一句话 |
+|---|---|---|
+| IU-XRay 报告 BERT-Sim | +0.0589 | 口径是 `paraphrase-MiniLM-L6-v2` 余弦相似度，**与 MiniGPT-Med 基线同脚本同权重**；BLEU-4/ROUGE-L 一并报，避免"只挑语义相似度"的质疑 |
+| VQA-RAD | +0.0745 | VQA-RAD 测试集仅 452 题，**置信区间较宽**（±0.02 量级），建议补 SLAKE（2094 题）上的同向提升来坐实 |
+| BUS 定位 IoU | +0.1370 | 基线 MiniGPT-Med **没有定位能力**（不能吐框），所以这是"从 0 到可用"而非"同能力比较"；同时要说明 IoU 是"每 GT 框取最大匹配再平均"的宽容口径 |
+
+**被问"怎么保证不是调参调出来的"** → 三件事：固定 split 与 seed、基线与本方法用**同一套 eval 脚本与同一份 GT**、所有超参（lr/warmup/epoch）对基线与本方法都做过小网格搜索。**不要**说"baseline 用的官方默认"——那是最容易被 challenge 的回答。
+
+---
+
+## 9. 高频追问题库（按被问概率排序）
+
+### A. 架构与多模态交互
+1. **为什么视觉 token 只有 256 个？会不会丢细节？** 4 合 1 patch merge，序列从 1024 降到 256；细节靠 SAM 分支补。丢的是空间分辨率，不是信息量（通道维扩到 5632）。
+2. **为什么 SAM 特征不进 LLM？** 64×64=4096 个 token 会让 8B 模型的上下文和 attention 成本爆炸（4096² vs 256²，差 256 倍）；而且 LLM 的语义空间不需要这种密集几何。分工：LLM 管"是什么/在哪一类"，SAM 管"精确到像素"。
+3. **为什么冻结 SAM/ViT？** 数据量只有万级（vs SAM 的 11M），全量微调会灾难性遗忘 + 显存不够；只训 prompt_encoder/mask_decoder（4M）就够适配新模态。
+4. **LoRA 为什么只挂 q/v，r=64？** q/v 是 MiniGPT-Med 的既有配置，便于复用；r=64 + α=16（scale 0.25）是在 8B 上"容量与遗忘"的折中。可以补一句："没做 r∈{16,32,64,128} 的完整消融，这是审稿人会问的点。"
+5. **SAM 输入为什么降到 512？** 位置编码是 O(n²) 的相对偏置，显存吃紧；1024→512 后 pos_embed 双三次插值，密集特征 32×32 再上采样到 64×64 与 SAM decoder 对齐。代价是细边界精度，但 RLE 之后差异不大（未量化，诚实说）。
+6. **文本和视觉的 attention 是双向还是因果？** 因果（LLaMA decoder-only）。视觉 token 在 prompt 前缀，文本 token 能看视觉，视觉 token 看不到后续文本——这也是为什么 `<SEG>` 的隐状态放在**生成侧**，它"看过"整段指令。
+7. **两段前向是不是很浪费？** 是，约 2× prefill。可优化：generate 时用 `return_dict_in_generate` + 自定义 `output_hidden_states`，或改用 `StaticCache` 手工解码循环，把需要的层隐状态存下来，省掉第二段。
+
+### B. 分割 / 定位细节
+8. `<SEG>` 的隐状态怎么变成 mask？`Linear(4096→512→256)` → 当作 SAM 的 sparse prompt（形状 `(B,1,256)`）→ 与密集特征 + 位置编码进 two-way transformer → 上采样 4× → 256×256 logits → sigmoid。
+9. **一个 `<SEG>` 只出一个 mask，怎么保证和 K 个实例一一对应？** 靠**发射顺序**与 GT 的顺序对齐（`_group_hidden_states_by_batch` 保留 batch 内顺序，`1393-1400` 按顺序配对）。风险：顺序错了监督就错，但数据集按标注顺序生成答案，所以对齐成立。
+10. **Dice 和 BCE 都用了，权重怎么定？** 1.0 : 0.5。医学分割里前景占比小，纯 BCE 会被背景淹没，Dice 提供区域级梯度。
+11. **框为什么用 L1 而不是 IoU loss？** 因为要交给语言模型"逐坐标回归"，L1 对坐标直接可导且稳定；IoU loss 在框退化（x2<x1）时梯度不友好。**但这是可改进点**：GIoU/DFL 通常能提 2~3 个点，且应加 `x1<x2, y1<y2` 的排序约束或参数化（中心+宽高）。
+12. **S/M/L 三档不会互相抢样本吗？** 会，同一 GT 只监督它所属那一档的头；好处是每档方差不混，坏处是小目标样本少（面积<1%）→ 用 `scale_w_s=2.0` 加权补偿。
+13. **`box_heads` 里的 64 类分类头用了吗？** 定义了 `class_head` 但**没有 CE 损失**，所以 `class_logits` 是未训练的随机输出（`generate` 里却会把它写进 `boxes[i]["class_id"]`）。→ 主动说："类别信息走文本通道，这个头是预留的，应该在正式版里删掉或接上监督。"
+14. **解剖头训练了吗？** 没有（`pass`）。见 §8.3。
+
+### C. 训练与优化
+15. **多任务会不会负迁移？怎么处理？** 观察到三个手段：(a) 任务随机采样让梯度交替而非叠加；(b) 结构化损失只作用在对应 token 位置，参数子空间基本不重叠；(c) 总损失 clamp 50 + 梯度裁剪 1.0 防某一任务主导。**没做的**：梯度冲突度量（PCGrad/GradNorm）、任务权重自适应——这是可以主动提的改进方向。
+16. **`<SEG>` 的梯度会不会污染语言能力？** 会有一点：`<SEG>` 的 CE 与掩码损失共享同一个隐状态。控制手段是 seg 损失权重（1.0）小于 text（1.0 但 token 数多 100 倍），实际 text loss 仍主导。
+17. **为什么 warmup 2000 步、lr 2e-5？** LLaMA-3 的 `llama_proj` 是**随机初始化**（MiniGPT-Med 的 ckpt 是 LLaMA-2 的，不兼容），需要更大 lr 和更长 warmup 做视觉-语言对齐。这是配置注释里明确写的（`finetune.yaml:208-215`）。
+18. **fp16 出过什么 problem？** 三类：logits 溢出→NaN（`nan_to_num` + fp32 CE）、非法 label id→CUDA gather 越界（清洗）、空答案→0/0 NaN（替换 + 返回 0）。
+19. **怎么判断模型收敛？** 分阶段看：对齐期看 `text_loss` 平台；精调期看 `n_seg_tokens`（是否稳定吐特殊 token）、`cardinality_acc`、seg Dice。这些都在 `forward` 返回值里（`1614-1629`）并打进 wandb。
+
+### D. 数据与评估
+20. **数据混合比例怎么定？** 按"任务覆盖度 + 数据量"人工定（indiana 25 给报告生成最大权重，kvasir 23 提供多实例，私有 US 17 提供逐实例掩码）。**没做**温度/不确定性驱动的自动配比。
+21. **患者级切分怎么做的？** `patient_level_split` 按 `patient_id` 分组后 shuffle（`dataset_utils.py:212-249`），私有数据 76/4/20。避免同一患者跨 split 泄漏——这点一定要主动说，医学数据集最常见的审稿质疑。
+22. **val 只有 243 张，选模可靠吗？** 不可靠，这也是为什么 best-ckpt 用 cardinality_acc 这种粗指标。承认它，并说"正式版会把 5 个任务的指标做加权早停"。
+23. **zero-shot RSNA 怎么做的？** RSNA 未进训练集，直接测 `<BOX_*>` → 检验"框回归头"的泛化。这类跨数据集 zero-shot 是审稿人喜欢的点。
+
+### E. 工程与局限
+24. **显存怎么压进 24G？** 冻结双塔 + `no_grad` 前向、SAM 降到 512、ViT/LLM 双梯度检查点、bs=2、AMP。
+25. **推理延迟多少？** 两段前向 + SAM ViT-H 一次；瓶颈在 8B 的 prefill 与 SAM-H（约 600M）。可优化点：SAM 换 ViT-B/MedSAM、视觉 token 用 KV cache 复用、第二段前向省掉。
+26. **最大的局限是什么？**（这题一定要有准备好的"三连"）
+    1. **暴露偏差**：训练时总是喂 GT 的 `<SEG>` 序列，推理时要自己决定数量；K 一错，掩码全部错配。
+    2. **框精度受限于 256 个视觉 token**，小目标上 IoU 天花板明显。
+    3. **结构化监督依赖人工/半自动掩码**，跨模态泛化（X 光几乎没有像素级标注）没有真正验证。
+
+---
+
+## 10. 专题：训练没问题、推理掉点，怎么系统性优化？
+
+这是最可能被追问的开放题。**不要一上来就说"加数据"**，要展示排查框架。
+
+### 10.1 第一步：分层归因（按这个顺序查，命中率从高到低）
+
+| # | 检查项 | 怎么测 | 若命中的典型现象 |
+|---|---|---|---|
+| 1 | **训练/推理预处理不一致** | 用 eval 的 processor 在**训练集**上跑一遍推理，比 loss/指标 | train 指标远高于 test；`RandomResizedCrop` vs `Resize` |
+| 2 | **坐标空间/归一化回路** | 把 GT 框走一遍"归一化→反归一化"，看是否还原 | 框系统性偏向某一边；`/448` 常量 vs 真实宽高（§3 坑 2） |
+| 3 | **特殊 token 未触发** | 统计 `seg_count` 分布、`<SEG>` 首次出现位置 | 大量 seg_count=0 → Dice=0；文本却看着正常 |
+| 4 | **EOS 未生效** | 打印生成长度分布，看是否顶到 200 | 长度全 200；EOS 之后还有 `<SEG>` 被计入（§6） |
+| 5 | **batch vs 单条** | 同一图 bs=1 与 bs=8 各跑一次 | bs 大时掉点 → 左填充 / position_ids |
+| 6 | **精度** | fp16 vs fp32 推理对比 | fp16 下 mask logits 溢出、坐标 round 误差放大 |
+| 7 | **teacher-forcing vs free-running** | 给定 GT 前缀（含正确 K 个 `<SEG>`）再解码掩码 | 给定 GT 前缀后 Dice 大幅回升 → 确诊**暴露偏差** |
+| 8 | **后处理阈值** | 阈值 0.3/0.4/0.5/0.6 扫 Dice | 最优阈值远离 0.5 → 训练分布与 sigmoid 校准不匹配 |
+
+> 第 7 项是**最有诊断价值**的一步：它把"模型不会分割"和"模型不会决定数量/格式"彻底分开。面试时把这一步讲出来，立刻区别于只会调参的候选人。
+
+### 10.2 第二步：按性价比排序的解法
+
+**P0（改动小、收益大、必须先做）**
+1. **对齐几何预处理**：dense 数据集去掉 `RandomResizedCrop`，改 `Resize(保持长宽比)+pad`，mask/box 用同一组参数变换。这一条通常单独就能救回大半 IoU。
+2. **逐样本坐标归一化**：用 `samples["image_size"]` 的 (W,H) 分别归一到 [0,1]，generate 时用同一组 (W,H) 反归一化；框参数化改成 `(cx,cy,w,h)` + sigmoid，天然保证 `w,h>0`、不会退化。
+3. **截断 EOS 之后的 token**，再做 `seg_count` / mask / box 解码；并把 `stopping_criteria` 真正传给 `generate`。
+4. **选模指标换成任务指标**（Dice/IoU/BERT-Sim 加权），别用 `cardinality_acc`。
+
+**P1（针对暴露偏差，这是本架构的核心病灶）**
+5. **结构化 token 前置**：把答案改成 `"<SEG> <SEG> ... {report text}"`，即**先出结构、再出文本**。好处：文本生成条件依赖于结构，结构 token 的隐状态不被长文本"稀释"；同时训练/推理的"结构决策点"更早、更集中。
+6. **Special-token dropout / scheduled sampling**：训练时以概率 p 把答案里的部分 `<SEG>` 替换成模型自己采样的 token（或用句子级 scheduled sampling），让模型见过"自己吐错数量"的状态。
+7. **加 count head**：在 prompt 末尾的最后一个隐状态上接一个 `0..K_max` 的分类头，用 GT K 做 CE。推理时用它**约束解码**（采样 K 后再生成正好 K 个 `<SEG>`），把"数量"从语言建模问题变成分类问题——**这是收益最确定的一步**。
+8. **约束解码（logits processor）**：任务标签为 `[segmentation]` 时，前 K 个位置只允许 `<SEG>` 与 EOS；`[detection]` 时只允许 `<BOX_*>`；禁止标点穿插。工业界落地基本都会加这层。
+
+**P2（精度上限）**
+9. **框损失升级**：L1 → `L1 + GIoU`（或 DFL 分布式回归），并加"预测框按 (x1,y1,x2,y2) 排序"的软约束。
+10. **更细的视觉特征**：把 256 token 提到 576（patch merge 2×2 或用 2 层特征金字塔），或给框头接一个可变形注意力采样 SAM 特征（让框"看得见"高分辨率）。
+11. **mask 后处理**：阈值搜索 + 连通域过滤 + 多 query 去重（两两 IoU>0.7 合并），并对 K=0 的样本设"最大前景概率 < τ 就不输出掩码"的拒识规则。
+12. **分割头微调策略**：SAM decoder 全量微调在小数据上容易过拟合，可试 LoRA 或只训 cross-attention 层。
+
+**P3（数据侧）**
+13. 难例挖掘：把推理时 IoU<0.3 的样本回流重训（注意要按患者切分，别把 test 漏进 train）。
+14. 多实例真标注：Kvasir 只给了合并掩码，若能拿到实例级掩码，多查询能力会有质变。
+15. 报告生成的暴露偏差：报告用 `beam search + 长度惩罚` 而非 greedy，并对高频模板做去重（Indiana 报告高度模板化，greedy 容易退化成"正常胸片"套话）。
+
+### 10.3 分指标对症表
+
+| 掉的指标 | 首要怀疑 | 首选动作 |
+|---|---|---|
+| BERT-Sim（报告） | 生成退化成模板/截断 | 检查 EOS 与 max_new_tokens；beam=3 + length_penalty；确认 eval 用同一 `end_sym` |
+| VQA BERT-Sim | 答案过短/超纲 | 检查 max_new_tokens=200 是否被结构 token 挤占；VQA 数据里混入了结构化 token 训练会不会串味 |
+| IoU（检测/定位） | 坐标回路 + 预处理 | §3 坑 1/2 + 框参数化；先做"GT 自环测试" |
+| Dice（分割） | seg_count=0 或阈值 | §10.1 第 3/8 项；加 count head + 约束解码 |
+| Identify Acc | 类别先验太强 | 该指标本身接近饱和，不要花时间优化 |
+| 全任务一起掉 | 推理管线/batch/precision | §10.1 第 1/5/6 项 |
+
+### 10.4 面试时的 30 秒回答模板
+
+> "我会先把'掉点'拆成两类：**格式错**（该吐的 token 没吐、数量不对）和**精度错**（吐了但位置/边界不准）。最快的判别方法是 **teacher-forcing 对照**：给定 GT 的结构前缀再解码，如果 Dice 立刻回到训练水平，说明是暴露偏差——那就上 count head + 约束解码 + scheduled sampling；如果仍然差，说明是几何不一致，我会先查预处理（训练用 RandomResizedCrop、评估用 Resize，掩码和框没跟着变）和坐标归一化（是否用了真实宽高而不是固定 448）。这两类问题在我们代码里都真实存在过，定位之后 IoU/Dice 的恢复是立竿见影的。"
+
+---
+
+## 11. 代码里真实存在的坑（被问住时的诚实回答模板）
+
+> 原则：**主动暴露 + 给出修法 + 说明影响范围**。这比假装完美安全得多，面试官最怕的是"不知道自己代码有问题"。
+
+| # | 问题 | 位置 | 影响 | 修法 |
+|---|---|---|---|---|
+| 1 | 框归一化用固定 448，非 448 宽的图 → 框被 clamp 到边界 | `omnirad.py:1283` | IoU 系统性偏低（**头号嫌疑**） | 用 `samples["image_size"]` 逐样本归一化 |
+| 2 | 训练 `RandomResizedCrop` 与 GT 掩码/框几何不对齐 | `blip_processors.py:78` + `unified_us_dataset.py:98` | dense 任务标签噪声 | Resize+pad，同步变换 mask/box |
+| 3 | cardinality 惩罚无梯度 | `omnirad.py:1460-1471` | K 只能靠 CE 学 | count head / REINFORCE |
+| 4 | anatomy 分类 `pass` 未实现 | `omnirad.py:1344-1347` | 解剖头未训练 | 接 CE，加 label map |
+| 5 | `class_head` 无损失，却输出 `class_id` | `omnirad.py:280` / `890-893` | 下游拿到随机类别 | 接 CE 或删除 |
+| 6 | `stopping_criteria` 构造未传入 generate | `omnirad.py:622-655` | 可能生成到 200 token | 显式传参 + 设 `eos_token_id=[128009,128001]` |
+| 7 | `seg_count` 统计包含 EOS 之后 token | `omnirad.py:732` | 幻影掩码、数量错 | 先截断到首个 EOS |
+| 8 | 课程学习是死代码 | `runner_base.py:374-392` | 无影响，但配置误导 | 实现 `set_curriculum_phase` 或删配置 |
+| 9 | `loss_weights["seg"]`、`text_bbox_penalty`、`cons_rd`、`cons_gs`、`align_anat` 均未使用 | `DEFAULT_LOSS_WEIGHTS` | 配置与实现不一致 | 清理或实现（跨任务一致性目前只做了 mask-box） |
+| 10 | 不确定性加权实际是"整图标量"而非逐像素 | `omnirad.py:1434-1445` | 叙事 > 实现 | 改逐像素 `F.binary_cross_entropy_with_logits(..., reduction='none')` |
+| 11 | `_compute_cons_loss` 固定用 `box_m` 头 | `omnirad.py:1209` | 跨尺度一致性有偏 | 把 token 名一起带进 tuple |
+| 12 | `identify` 答案里复制了 prompt 的 bbox | `unified_us_dataset.py:290` | 指标虚高 | 换更硬的问法/遮挡框 |
+
+**万能话术**：
+> "这个模块我实现时先跑通了主链路，上面这些是已知的待清理项，优先级按对指标的影响排：坐标回路的 P0，count 监督的 P1，配置清理的 P2。论文版会在 camera-ready 前把 1、2、3、6、7 修掉并补消融。"
+
+---
+
+
+### 附：一句话记住每个模块
+
+| 模块 | 一句话 |
+|---|---|
+| EVA 分支 | 把图变成 256 个"词"，让 8B 模型能读图 |
+| SAM 分支 | 不进 LLM 的几何字典，按 LLM 的提问查表 |
+| `<SEG>` | 一个 token = 一个 mask query，变量 = 自适应实例数 |
+| `<BOX_S/M/L>` | 按面积分档的回归专家，缓解小目标方差 |
+| `<LOC>` | 临床习惯的"区域词 + 像素框"联合表达 |
+| 两段前向 | 用 2× prefill 换"训练推理口径一致" |
+| 一致性损失 | 让"掩码的紧致框"与"预测框"互相约束（目前只做了这一个方向） |
+
+###  一个可执行的排查清单(模型微调效果不好，如何排查)
+1. 用固定测试集对比基座和微调模型。
+2. 检查训练/验证集是否泄漏。
+3. 抽查 50 条训练样本，看格式、风格、指令是否一致。
+4. 看训练 loss、验证 loss、业务指标曲线。
+5. 确认推理 prompt、模板、tokenizer、max_new_tokens 与训练一致。
+6. 只改一个超参重跑小实验，观察变化。
+7. 如果领域提升但通用退化，尝试 LoRA、混入通用数据或降低训练强度。
+8. 记录每次实验的数据版本、超参、指标和典型 bad case。
