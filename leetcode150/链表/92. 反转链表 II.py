@@ -16,30 +16,22 @@ class ListNode:
         self.val = val
         self.next = next
 class Solution:
-    def reverseBetween(self, head: ListNode, left: int, right: int) -> ListNode: # 迭代法: 1.找到left节点的前一个节点pre_left和right节点pre_right; 2.反转left到right之间的节点; 3.将pre_left.next指向pre; 4.将pre_right.next指向cur; 5.返回head
-        if not head or not head.next:
-            return head
-        pre = None
-        cur = head
-        while left > 1:
-            pre = cur
-            cur = cur.next
-            left -= 1
-            right -= 1
-        pre_left = pre
-        pre_right = cur
-        while right > 0:
+    def reverseBetween(self, head: ListNode, left: int, right: int) -> ListNode:
+        # 设置 dummyNode 是这一类问题的一般做法
+        dummy_node = ListNode(-1)
+        dummy_node.next = head
+        pre = dummy_node
+        for _ in range(left - 1):
+            pre = pre.next
+
+        cur = pre.next
+        for _ in range(right - left):
             next = cur.next
-            cur.next = pre
-            pre = cur
-            cur = next
-            right -= 1
-        if pre_left:
-            pre_left.next = pre
-        else:
-            head = pre
-        pre_right.next = cur
-        return head
+            cur.next = next.next
+            next.next = pre.next
+            pre.next = next
+        return dummy_node.next
+
 
     def reverseBetween2(self, head: ListNode, left: int, right: int) -> ListNode: # 递归法：
         if not head or not head.next:
@@ -53,9 +45,9 @@ class Solution:
         if n == 1:
             return head
         last = self.reverseN(head.next, n - 1)
-        next = head.next
-        head.next = next.next
-        next.next = head
+        pre = head.next
+        head.next = pre.next
+        pre.next = head
         return last
 
 if __name__ == '__main__':
