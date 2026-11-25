@@ -502,7 +502,6 @@ JDK 6 之后为了减少无谓的内核态切换，引入了锁升级：无锁 �
 - **模板方法模式：** AQS 只定义排队和阻塞的骨架，留出 `tryAcquire` / `tryRelease` 给子类实现；
 - **公平与非公平：** 公平锁在 `tryAcquire` 里先判断队列前面有没有人排队，非公平锁直接抢（可能插队），因此非公平锁吞吐更高。
 
-**面试结论：** 一句话概括——AQS 把"抢不到资源怎么办"（排队 + 挂起 + 唤醒）这套通用逻辑抽出来，子类只需要定义"什么算抢到"。
 
 ### Q39. volatile 有什么作用？
 
@@ -657,17 +656,6 @@ Java 中的入口是 `Unsafe.compareAndSwapInt` 等方法，底层对应 x86 的
 | AtomicMarkableReference | 只加一个 boolean 标记 | 只关心"是否被改过"，不关心改了几次 |
 | 加锁 | 直接互斥 | 最简单，但放弃无锁收益 |
 
-### Q40.3. AtomicLong 和 LongAdder 有什么区别？
-
-| 对比 | AtomicLong | LongAdder |
-|---|---|---|
-| 结构 | 单个 volatile value | base + Cell 数组 |
-| 高并发写 | 所有线程 CAS 同一个值，冲突高 | 分散到不同 Cell，冲突大幅降低 |
-| 读取 | 直接读，强一致 | `sum()` 汇总各 Cell，弱一致 |
-| 内存占用 | 小 | 更大（空间换时间） |
-| 适用场景 | 需要精确读取、竞争不激烈 | 高并发统计计数、监控埋点 |
-
-**面试结论：** LongAdder 本质是分段思想——把热点打散到多个 Cell，最后再汇总，和 ConcurrentHashMap 的分段锁思路一脉相承。代价是 `sum()` 期间可能读到不一致的中间结果。
 
 ### Q40.4. 什么是乐观锁和悲观锁？
 
@@ -732,6 +720,7 @@ Java 中的入口是 `Unsafe.compareAndSwapInt` 等方法，底层对应 x86 的
 - corePoolSize：核心线程数；
 - maximumPoolSize：最大线程数；
 - keepAliveTime：非核心线程空闲存活时间；
+- unit：keepAliveTime 参数的时间单位：
 - workQueue：任务队列；
 - threadFactory：线程创建工厂；
 - RejectedExecutionHandler：拒绝策略。
